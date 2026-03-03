@@ -32,11 +32,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/wesense-iroh-sidecar /usr/local/bin/
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-ENV IROH_DATA_DIR=/data
+ENV IROH_DATA_DIR=/app/data
 ENV IROH_SIDECAR_PORT=4400
 EXPOSE 4400
 
-VOLUME /data
-
-ENTRYPOINT ["wesense-iroh-sidecar"]
+ENTRYPOINT ["/app/entrypoint.sh"]
