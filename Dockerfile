@@ -25,7 +25,7 @@ COPY src/ src/
 RUN cargo build --release
 
 # Stage 4: Runtime
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -34,8 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /build/target/release/wesense-iroh-sidecar /usr/local/bin/
 
 ENV IROH_DATA_DIR=/data
-ENV IROH_SIDECAR_PORT=4002
-EXPOSE 4002
+ENV IROH_SIDECAR_PORT=4400
+EXPOSE 4400
 
 VOLUME /data
 
