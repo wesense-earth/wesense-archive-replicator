@@ -28,7 +28,7 @@ RUN cargo build --release
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/wesense-iroh-sidecar /usr/local/bin/
