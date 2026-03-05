@@ -17,12 +17,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use iroh::protocol::Router;
-use iroh::{Endpoint, RelayMode, SecretKey};
+use iroh::{Endpoint, RelayMode, RelayUrl, SecretKey};
 use iroh_blobs::BlobsProtocol;
 use iroh_gossip::net::Gossip;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::api::AppState;
 use crate::config::Config;
@@ -81,9 +81,34 @@ async fn main() -> Result<()> {
     // 2. Load or generate persistent secret key
     let secret_key = load_or_generate_secret_key(&config.data_dir).await?;
 
-    // 3. Create the iroh endpoint — DERP-free, bound to configured QUIC port
+    // 3. Create the iroh endpoint — bound to configured QUIC port
+    //    Uses custom DERP relays if configured, otherwise DERP-free.
     let quic_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, config.quic_port);
-    let endpoint = Endpoint::empty_builder(RelayMode::Disabled)
+    let relay_mode = if config.relay_urls.is_empty() {
+        info!("No relay URLs configured — DERP disabled");
+        RelayMode::Disabled
+    } else {
+        let urls: Vec<RelayUrl> = config
+            .relay_urls
+            .iter()
+            .filter_map(|u| match u.parse::<RelayUrl>() {
+                Ok(url) => Some(url),
+                Err(e) => {
+                    warn!(url = %u, error = %e, "Invalid relay URL, skipping");
+                    None
+                }
+            })
+            .collect();
+        if urls.is_empty() {
+            info!("All relay URLs invalid — DERP disabled");
+            RelayMode::Disabled
+        } else {
+            info!(relay_count = urls.len(), "Using custom DERP relays");
+            RelayMode::custom(urls)
+        }
+    };
+
+    let endpoint = Endpoint::empty_builder(relay_mode)
         .secret_key(secret_key)
         .clear_address_lookup()
         .bind_addr(quic_addr)?
@@ -93,7 +118,7 @@ async fn main() -> Result<()> {
 
     let node_id = endpoint.id();
     let node_id_str = node_id.to_string();
-    info!(node_id = %node_id_str, quic_port = config.quic_port, "Iroh endpoint bound (DERP disabled)");
+    info!(node_id = %node_id_str, quic_port = config.quic_port, "Iroh endpoint bound");
 
     // 4. Open the blob store
     let blob_store = BlobStore::open(&config.data_dir, Arc::clone(&index))
@@ -153,6 +178,7 @@ async fn main() -> Result<()> {
         Arc::clone(&config),
         endpoint_for_discovery,
         node_id_str.clone(),
+        Arc::clone(&blob_store),
     );
 
     // 13. Spawn reconciliation loop

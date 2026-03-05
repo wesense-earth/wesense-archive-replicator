@@ -40,6 +40,7 @@ struct StatusResponse {
     blob_count: usize,
     gossip_topic: String,
     store_scope: Vec<String>,
+    relay_urls: Vec<String>,
     replication: ReplicationStatusResponse,
 }
 
@@ -178,6 +179,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
         blob_count: state.store.blob_count().await,
         gossip_topic: state.config.gossip_topic.clone(),
         store_scope: scope_strings,
+        relay_urls: state.config.relay_urls.clone(),
         replication: ReplicationStatusResponse {
             replicated: repl_stats.replicated(),
             skipped_existing: repl_stats.skipped_existing(),

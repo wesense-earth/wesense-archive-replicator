@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use iroh::Endpoint;
+use iroh::{Endpoint, RelayConfig, RelayUrl};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
+use crate::store::BlobStore;
 
 /// Register this node's iroh identity in OrbitDB.
 async fn register_node(
@@ -26,6 +27,10 @@ async fn register_node(
 
     if let Some(ref addr) = config.announce_address {
         body["iroh_address"] = serde_json::json!(addr);
+    }
+
+    if !config.relay_urls.is_empty() {
+        body["iroh_relay_urls"] = serde_json::json!(config.relay_urls);
     }
 
     let resp = client
@@ -50,10 +55,12 @@ async fn register_node(
 
 /// Discover other iroh sidecar peers from OrbitDB.
 /// Returns a list of node ID strings for peers with iroh_node_id fields.
+/// Also discovers relay URLs from peers and adds them to the endpoint.
 async fn discover_peers(
     config: &Config,
     own_node_id: &str,
     client: &reqwest::Client,
+    endpoint: &Endpoint,
 ) -> Result<Vec<String>> {
     let url = format!("{}/nodes", config.orbitdb_url);
 
@@ -94,17 +101,75 @@ async fn discover_peers(
                 );
             }
         }
+
+        // Discover relay URLs from peers and add them to our endpoint
+        if let Some(relays) = node["iroh_relay_urls"].as_array() {
+            for relay in relays {
+                if let Some(url_str) = relay.as_str() {
+                    if let Ok(url) = url_str.parse::<RelayUrl>() {
+                        endpoint
+                            .insert_relay(url.clone(), Arc::new(RelayConfig::from(url)))
+                            .await;
+                    }
+                }
+            }
+        }
     }
 
     Ok(peers)
+}
+
+/// Register this node's store scope in OrbitDB.
+async fn register_store_scope(
+    config: &Config,
+    node_id: &str,
+    blob_count: usize,
+    client: &reqwest::Client,
+) -> Result<()> {
+    let short_id = &node_id[..16.min(node_id.len())];
+    let id = format!("iroh-sidecar-{}", short_id);
+    let url = format!("{}/stores/{}", config.orbitdb_url, id);
+
+    let scope: Vec<String> = config
+        .store_scope
+        .iter()
+        .map(|p| format!("{}/{}", p.country, p.subdivision))
+        .collect();
+
+    let body = serde_json::json!({
+        "store_scope": scope,
+        "blob_count": blob_count,
+        "iroh_node_id": node_id,
+        "type": "iroh-sidecar",
+    });
+
+    let resp = client
+        .put(&url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .context("Failed to register store scope in OrbitDB")?;
+
+    if resp.status().is_success() {
+        debug!(id = %id, blob_count, "Registered store scope in OrbitDB");
+    } else {
+        warn!(
+            status = %resp.status(),
+            "OrbitDB store scope registration returned non-success"
+        );
+    }
+
+    Ok(())
 }
 
 /// Spawn the discovery loop. Registers this node in OrbitDB and periodically
 /// discovers peers. Returns a shared list of discovered peer node IDs.
 pub fn spawn_discovery_loop(
     config: Arc<Config>,
-    _endpoint: Endpoint,
+    endpoint: Endpoint,
     node_id: String,
+    store: Arc<BlobStore>,
 ) -> Arc<RwLock<Vec<String>>> {
     let discovered_peers: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
     let peers_clone = Arc::clone(&discovered_peers);
@@ -144,8 +209,14 @@ pub fn spawn_discovery_loop(
                 debug!(error = %e, "OrbitDB re-registration failed");
             }
 
+            // Register store scope alongside node heartbeat
+            let blob_count = store.blob_count().await;
+            if let Err(e) = register_store_scope(&config, &node_id, blob_count, &client).await {
+                debug!(error = %e, "OrbitDB store scope registration failed");
+            }
+
             // Discover peers
-            match discover_peers(&config, &node_id, &client).await {
+            match discover_peers(&config, &node_id, &client, &endpoint).await {
                 Ok(new_peers) => {
                     let count = new_peers.len();
 

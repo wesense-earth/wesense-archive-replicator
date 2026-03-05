@@ -55,6 +55,8 @@ pub struct Config {
     pub reconcile_interval_secs: u64,
     /// Public address to announce to other peers (IP or hostname).
     pub announce_address: Option<String>,
+    /// DERP relay URLs for NAT traversal fallback (e.g. `https://derp.wesense.earth`).
+    pub relay_urls: Vec<String>,
 }
 
 impl Config {
@@ -102,6 +104,15 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(900),
             announce_address: std::env::var("ANNOUNCE_ADDRESS").ok().filter(|s| !s.is_empty()),
+            relay_urls: std::env::var("IROH_RELAY_URLS")
+                .ok()
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
