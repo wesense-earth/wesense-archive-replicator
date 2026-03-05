@@ -93,6 +93,26 @@ impl BlobStore {
         &self.store
     }
 
+    /// Register a blob that was downloaded by the Downloader (already in FsStore).
+    /// Only updates the PathIndex — no re-import of bytes needed.
+    pub async fn register_downloaded(
+        &self,
+        logical_path: &str,
+        hash_hex: &str,
+        size: u64,
+    ) -> Result<()> {
+        self.index
+            .insert(logical_path, hash_hex.to_string(), size)
+            .await?;
+        debug!(
+            path = logical_path,
+            hash = hash_hex,
+            size,
+            "Registered downloaded blob in index"
+        );
+        Ok(())
+    }
+
     /// Total number of indexed blobs.
     pub async fn blob_count(&self) -> usize {
         self.index.len().await

@@ -38,5 +38,6 @@ RUN chmod +x /app/entrypoint.sh
 ENV IROH_DATA_DIR=/app/data
 ENV IROH_SIDECAR_PORT=4400
 EXPOSE 4400
+EXPOSE 4401/udp
 
 ENTRYPOINT ["/app/entrypoint.sh"]

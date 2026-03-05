@@ -11,16 +11,20 @@ use axum::Json;
 use serde::Serialize;
 use tracing::error;
 
+use crate::config::Config;
 use crate::gossip::GossipHandle;
 use crate::index::PathIndex;
+use crate::replicator::ReplicationStats;
 use crate::store::BlobStore;
 
 /// Shared application state for all route handlers.
 pub struct AppState {
-    pub store: BlobStore,
+    pub store: Arc<BlobStore>,
     pub index: Arc<PathIndex>,
     pub gossip: Arc<GossipHandle>,
     pub node_id: String,
+    pub config: Arc<Config>,
+    pub stats: Arc<ReplicationStats>,
 }
 
 /// Response from PUT /blobs/{path}
@@ -35,6 +39,18 @@ struct StatusResponse {
     node_id: String,
     blob_count: usize,
     gossip_topic: String,
+    store_scope: Vec<String>,
+    replication: ReplicationStatusResponse,
+}
+
+#[derive(Serialize)]
+struct ReplicationStatusResponse {
+    replicated: u64,
+    skipped_existing: u64,
+    skipped_scope: u64,
+    failed: u64,
+    last_replicated: Option<String>,
+    last_reconciliation: Option<String>,
 }
 
 /// Build the axum router with all routes.
@@ -62,13 +78,15 @@ async fn put_blob(
         return (StatusCode::BAD_REQUEST, "Empty body").into_response();
     }
 
+    let size = body.len() as u64;
+
     match state.store.import(&path, body).await {
         Ok(hash) => {
             // Try to announce via gossip (extract date from path if possible)
             if let Some((country, subdivision, date)) = parse_archive_path(&path) {
                 if let Err(e) = state
                     .gossip
-                    .announce_archive(&country, &subdivision, &date, &hash)
+                    .announce_archive(&country, &subdivision, &date, &hash, &path, size)
                     .await
                 {
                     error!(error = %e, "Failed to announce via gossip");
@@ -144,18 +162,36 @@ async fn archived_dates(
     Json(dates.into_iter().collect())
 }
 
-/// GET /status — Node status information.
+/// GET /status — Node status information with replication stats.
 async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
+    let scope_strings: Vec<String> = state
+        .config
+        .store_scope
+        .iter()
+        .map(|p| format!("{}/{}", p.country, p.subdivision))
+        .collect();
+
+    let repl_stats = &state.stats;
+
     Json(StatusResponse {
         node_id: state.node_id.clone(),
         blob_count: state.store.blob_count().await,
-        gossip_topic: "wesense-archives".to_string(),
+        gossip_topic: state.config.gossip_topic.clone(),
+        store_scope: scope_strings,
+        replication: ReplicationStatusResponse {
+            replicated: repl_stats.replicated(),
+            skipped_existing: repl_stats.skipped_existing(),
+            skipped_scope: repl_stats.skipped_scope(),
+            failed: repl_stats.failed(),
+            last_replicated: repl_stats.last_replicated(),
+            last_reconciliation: repl_stats.last_reconciliation(),
+        },
     })
 }
 
 /// Try to parse `{country}/{subdivision}/{YYYY}/{MM}/{DD}/...` from a path.
 /// Returns (country, subdivision, "YYYY-MM-DD") if the pattern matches.
-fn parse_archive_path(path: &str) -> Option<(String, String, String)> {
+pub(crate) fn parse_archive_path(path: &str) -> Option<(String, String, String)> {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() >= 5 {
         let country = parts[0];
