@@ -61,6 +61,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/blobs/{*path}", put(put_blob))
         .route("/blobs/{*path}", get(get_blob))
         .route("/blobs/{*path}", head(head_blob))
+        .route("/list/", get(list_root))
         .route("/list/{*path}", get(list_dir))
         .route(
             "/archived-dates/{country}/{subdivision}",
@@ -144,6 +145,12 @@ async fn head_blob(
     } else {
         StatusCode::NOT_FOUND
     }
+}
+
+/// GET /list/ — List top-level entries (root listing).
+async fn list_root(State(state): State<Arc<AppState>>) -> Json<Vec<String>> {
+    let entries = state.index.list_dir("").await;
+    Json(entries)
 }
 
 /// GET /list/{path} — List entries under a directory prefix.
