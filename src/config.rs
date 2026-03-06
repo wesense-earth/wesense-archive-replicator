@@ -45,12 +45,10 @@ pub struct Config {
     /// QUIC bind port for iroh P2P connections.
     pub quic_port: u16,
     /// Store scope — which country/subdivision archives to download.
-    /// Empty = no downloads (announce-only mode).
+    /// Default "*/*" = replicate all. Set to specific patterns to limit.
     pub store_scope: Vec<ScopePattern>,
     /// OrbitDB HTTP API URL for peer discovery and reconciliation.
     pub orbitdb_url: String,
-    /// Bootstrap peers to connect to on startup (comma-separated NodeId or addresses).
-    pub bootstrap_peers: Vec<String>,
     /// Interval in seconds between reconciliation runs. 0 = disabled.
     pub reconcile_interval_secs: u64,
     /// Public address to announce to other peers (IP or hostname).
@@ -62,24 +60,12 @@ pub struct Config {
 impl Config {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
-        let store_scope = std::env::var("IROH_STORE_SCOPE")
-            .ok()
-            .map(|v| {
-                v.split(',')
-                    .filter_map(ScopePattern::parse)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        let bootstrap_peers = std::env::var("IROH_BOOTSTRAP_PEERS")
-            .ok()
-            .map(|v| {
-                v.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let store_scope_str = std::env::var("IROH_STORE_SCOPE")
+            .unwrap_or_else(|_| "*/*".to_string());
+        let store_scope: Vec<ScopePattern> = store_scope_str
+            .split(',')
+            .filter_map(ScopePattern::parse)
+            .collect();
 
         Self {
             port: std::env::var("IROH_SIDECAR_PORT")
@@ -98,7 +84,6 @@ impl Config {
             store_scope,
             orbitdb_url: std::env::var("ORBITDB_URL")
                 .unwrap_or_else(|_| "http://wesense-orbitdb:5200".to_string()),
-            bootstrap_peers,
             reconcile_interval_secs: std::env::var("IROH_RECONCILE_INTERVAL")
                 .ok()
                 .and_then(|v| v.parse().ok())

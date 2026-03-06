@@ -90,6 +90,15 @@ impl GossipHandle {
         self.connected_peers.load(Ordering::Relaxed)
     }
 
+    /// Add peers to the gossip mesh. Called by discovery when new peers are found.
+    pub async fn join_peers(&self, peers: Vec<iroh::PublicKey>) -> Result<()> {
+        let sender = self.sender.read().await;
+        if let Some(ref s) = *sender {
+            s.join_peers(peers).await?;
+        }
+        Ok(())
+    }
+
     /// Subscribe to the gossip topic and spawn a receiver task.
     pub async fn start(self: &Arc<Self>) -> Result<()> {
         let topic_handle = self

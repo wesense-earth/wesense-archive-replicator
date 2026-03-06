@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use iroh::address_lookup::MemoryLookup;
 use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode, RelayUrl, SecretKey};
 use iroh_blobs::BlobsProtocol;
@@ -66,6 +67,12 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::from_env();
+
+    if config.announce_address.is_none() {
+        warn!("ANNOUNCE_ADDRESS not set — other stations cannot discover this node's QUIC address. \
+               Set ANNOUNCE_ADDRESS to this host's reachable IP or hostname for cross-host replication.");
+    }
+
     info!(?config, "Starting WeSense Iroh Sidecar");
 
     // Ensure data directory exists
@@ -115,6 +122,10 @@ async fn main() -> Result<()> {
         .bind()
         .await
         .context("Failed to bind iroh endpoint")?;
+
+    // Create a MemoryLookup for OrbitDB-discovered peer addresses
+    let memory_lookup = MemoryLookup::default();
+    endpoint.address_lookup().add(memory_lookup.clone());
 
     let node_id = endpoint.id();
     let node_id_str = node_id.to_string();
@@ -179,6 +190,8 @@ async fn main() -> Result<()> {
         endpoint_for_discovery,
         node_id_str.clone(),
         Arc::clone(&blob_store),
+        memory_lookup,
+        Arc::clone(&gossip_handle),
     );
 
     // 13. Spawn reconciliation loop

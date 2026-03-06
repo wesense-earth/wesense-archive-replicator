@@ -1,13 +1,16 @@
 //! OrbitDB-based peer discovery — register this node and discover peers.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use iroh::{Endpoint, RelayConfig, RelayUrl};
+use iroh::address_lookup::MemoryLookup;
+use iroh::{Endpoint, EndpointAddr, PublicKey, RelayConfig, RelayUrl};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
+use crate::gossip::GossipHandle;
 use crate::store::BlobStore;
 
 /// Register this node's iroh identity in OrbitDB.
@@ -55,12 +58,15 @@ async fn register_node(
 
 /// Discover other iroh sidecar peers from OrbitDB.
 /// Returns a list of node ID strings for peers with iroh_node_id fields.
-/// Also discovers relay URLs from peers and adds them to the endpoint.
+/// Also registers discovered peer addresses in the endpoint's address lookup
+/// and joins them via gossip.
 async fn discover_peers(
     config: &Config,
     own_node_id: &str,
     client: &reqwest::Client,
     endpoint: &Endpoint,
+    memory_lookup: &MemoryLookup,
+    gossip: &GossipHandle,
 ) -> Result<Vec<String>> {
     let url = format!("{}/nodes", config.orbitdb_url);
 
@@ -82,37 +88,70 @@ async fn discover_peers(
         .unwrap_or_default();
 
     let mut peers = Vec::new();
+    let mut peer_ids_to_join = Vec::new();
+
     for node in &nodes {
         let node_id = match node["iroh_node_id"].as_str() {
             Some(id) if !id.is_empty() && id != own_node_id => id,
             _ => continue,
         };
+
+        let pk: PublicKey = match node_id.parse() {
+            Ok(pk) => pk,
+            Err(_) => continue,
+        };
+
         peers.push(node_id.to_string());
 
-        // If the peer has an address, try to connect to it
-        if let Some(addr) = node["iroh_address"].as_str() {
-            if !addr.is_empty() {
+        // Build an EndpointAddr with whatever addressing info we have
+        let mut endpoint_addr = EndpointAddr::new(pk);
+        let mut has_address = false;
+
+        if let Some(addr_str) = node["iroh_address"].as_str() {
+            if !addr_str.is_empty() {
                 let port = node["iroh_quic_port"].as_u64().unwrap_or(4401) as u16;
-                debug!(
-                    peer_node_id = %&node_id[..16.min(node_id.len())],
-                    address = addr,
-                    port,
-                    "Discovered peer with address"
-                );
+                if let Ok(ip) = addr_str.parse::<std::net::IpAddr>() {
+                    let sock_addr = SocketAddr::new(ip, port);
+                    endpoint_addr = endpoint_addr.with_ip_addr(sock_addr);
+                    has_address = true;
+                    debug!(
+                        peer = %&node_id[..16.min(node_id.len())],
+                        address = %sock_addr,
+                        "Discovered peer with direct address"
+                    );
+                }
             }
         }
 
-        // Discover relay URLs from peers and add them to our endpoint
+        // Add relay URLs from the peer
         if let Some(relays) = node["iroh_relay_urls"].as_array() {
             for relay in relays {
                 if let Some(url_str) = relay.as_str() {
                     if let Ok(url) = url_str.parse::<RelayUrl>() {
+                        endpoint_addr = endpoint_addr.with_relay_url(url.clone());
                         endpoint
                             .insert_relay(url.clone(), Arc::new(RelayConfig::from(url)))
                             .await;
+                        has_address = true;
                     }
                 }
             }
+        }
+
+        // Register the peer's address info in the endpoint's address lookup
+        if has_address {
+            memory_lookup.add_endpoint_info(endpoint_addr);
+            peer_ids_to_join.push(pk);
+        }
+    }
+
+    // Tell gossip to connect to all discovered peers with addresses
+    if !peer_ids_to_join.is_empty() {
+        let count = peer_ids_to_join.len();
+        if let Err(e) = gossip.join_peers(peer_ids_to_join).await {
+            warn!(error = %e, "Failed to join discovered peers via gossip");
+        } else {
+            info!(peer_count = count, "Joined discovered peers via gossip");
         }
     }
 
@@ -170,6 +209,8 @@ pub fn spawn_discovery_loop(
     endpoint: Endpoint,
     node_id: String,
     store: Arc<BlobStore>,
+    memory_lookup: MemoryLookup,
+    gossip: Arc<GossipHandle>,
 ) -> Arc<RwLock<Vec<String>>> {
     let discovered_peers: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
     let peers_clone = Arc::clone(&discovered_peers);
@@ -215,23 +256,12 @@ pub fn spawn_discovery_loop(
                 debug!(error = %e, "OrbitDB store scope registration failed");
             }
 
-            // Discover peers
-            match discover_peers(&config, &node_id, &client, &endpoint).await {
+            // Discover peers and wire them into endpoint + gossip
+            match discover_peers(&config, &node_id, &client, &endpoint, &memory_lookup, &gossip)
+                .await
+            {
                 Ok(new_peers) => {
                     let count = new_peers.len();
-
-                    // Try to connect to peers with addresses
-                    for peer_node_id in &new_peers {
-                        if let Ok(pk) = peer_node_id.parse::<iroh::PublicKey>() {
-                            // The Endpoint will cache connections established during gossip.
-                            // For OrbitDB-discovered peers that we haven't seen via gossip,
-                            // explicit connect would be needed, but requires EndpointAddr
-                            // which needs address info. For now, just record the peer ID —
-                            // the Downloader will attempt to reach them via cached connections.
-                            let _pk = pk; // Validate parse
-                        }
-                    }
-
                     let mut peers = peers_clone.write().await;
                     *peers = new_peers;
                     debug!(peer_count = count, "Updated discovered peers list");
@@ -239,16 +269,6 @@ pub fn spawn_discovery_loop(
                 Err(e) => {
                     debug!(error = %e, "Peer discovery failed");
                 }
-            }
-
-            // Try to connect to bootstrap peers if we have addresses
-            for peer_addr in &config.bootstrap_peers {
-                if peer_addr.is_empty() {
-                    continue;
-                }
-                // Bootstrap peers are iroh node IDs or addresses
-                // For now, just log — direct connection requires EndpointAddr
-                debug!(bootstrap = %peer_addr, "Bootstrap peer configured");
             }
         }
     });
