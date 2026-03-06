@@ -1,5 +1,6 @@
 //! Gossip protocol — join topic, broadcast archive announcements, forward to replicator.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -54,6 +55,7 @@ pub struct GossipHandle {
     topic_id: TopicId,
     node_id: String,
     fetch_tx: Option<mpsc::Sender<FetchRequest>>,
+    connected_peers: AtomicUsize,
 }
 
 impl GossipHandle {
@@ -79,7 +81,13 @@ impl GossipHandle {
             topic_id,
             node_id,
             fetch_tx,
+            connected_peers: AtomicUsize::new(0),
         }
+    }
+
+    /// Number of currently connected gossip peers.
+    pub fn connected_peers(&self) -> usize {
+        self.connected_peers.load(Ordering::Relaxed)
     }
 
     /// Subscribe to the gossip topic and spawn a receiver task.
@@ -220,10 +228,12 @@ impl GossipHandle {
                     }
                 }
                 Ok(Event::NeighborUp(peer_id)) => {
-                    info!(peer = %peer_id, "Gossip peer connected");
+                    let count = self.connected_peers.fetch_add(1, Ordering::Relaxed) + 1;
+                    info!(peer = %peer_id, connected = count, "Gossip peer connected");
                 }
                 Ok(Event::NeighborDown(peer_id)) => {
-                    info!(peer = %peer_id, "Gossip peer disconnected");
+                    let count = self.connected_peers.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+                    info!(peer = %peer_id, connected = count, "Gossip peer disconnected");
                 }
                 Ok(Event::Lagged) => {
                     warn!("Gossip receiver lagged — missed messages");

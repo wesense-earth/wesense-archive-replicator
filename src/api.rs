@@ -38,6 +38,7 @@ struct StoreResponse {
 struct StatusResponse {
     node_id: String,
     blob_count: usize,
+    connected_peers: usize,
     gossip_topic: String,
     store_scope: Vec<String>,
     relay_urls: Vec<String>,
@@ -177,6 +178,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
     Json(StatusResponse {
         node_id: state.node_id.clone(),
         blob_count: state.store.blob_count().await,
+        connected_peers: state.gossip.connected_peers(),
         gossip_topic: state.config.gossip_topic.clone(),
         store_scope: scope_strings,
         relay_urls: state.config.relay_urls.clone(),
