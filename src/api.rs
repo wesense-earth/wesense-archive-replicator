@@ -68,6 +68,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
             get(archived_dates),
         )
         .route("/status", get(status))
+        .route("/path-index", get(path_index))
         .with_state(state)
 }
 
@@ -198,6 +199,11 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
             last_reconciliation: repl_stats.last_reconciliation(),
         },
     })
+}
+
+/// GET /path-index — Dump the full path→hash index.
+async fn path_index(State(state): State<Arc<AppState>>) -> Json<std::collections::BTreeMap<String, crate::index::IndexEntry>> {
+    Json(state.index.dump().await)
 }
 
 /// Try to parse `{country}/{subdivision}/{YYYY}/{MM}/{DD}/...` from a path.
