@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, head, put};
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::config::Config;
@@ -201,9 +201,57 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
     })
 }
 
-/// GET /path-index — Dump the full path→hash index.
-async fn path_index(State(state): State<Arc<AppState>>) -> Json<std::collections::BTreeMap<String, crate::index::IndexEntry>> {
-    Json(state.index.dump().await)
+/// Query parameters for GET /path-index.
+#[derive(Deserialize, Default)]
+struct PathIndexQuery {
+    /// Filter by country code (e.g. "nz").
+    country: Option<String>,
+    /// Filter by country/subdivision (e.g. "nz/wgn").
+    region: Option<String>,
+    /// Only entries with dates >= this (e.g. "2026-03-01").
+    since: Option<String>,
+}
+
+/// GET /path-index — Dump the path→hash index, optionally filtered.
+async fn path_index(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PathIndexQuery>,
+) -> Json<std::collections::BTreeMap<String, crate::index::IndexEntry>> {
+    let all = state.index.dump().await;
+
+    // If no filters, return everything
+    if params.country.is_none() && params.region.is_none() && params.since.is_none() {
+        return Json(all);
+    }
+
+    let filtered = all
+        .into_iter()
+        .filter(|(path, _)| {
+            // Country filter: path starts with "{country}/"
+            if let Some(ref c) = params.country {
+                if !path.starts_with(&format!("{}/", c)) {
+                    return false;
+                }
+            }
+            // Region filter: path starts with "{country}/{subdivision}/"
+            if let Some(ref r) = params.region {
+                if !path.starts_with(&format!("{}/", r)) {
+                    return false;
+                }
+            }
+            // Since filter: extract date from path and compare lexicographically
+            if let Some(ref since) = params.since {
+                if let Some((_, _, date)) = parse_archive_path(path) {
+                    if date.as_str() < since.as_str() {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .collect();
+
+    Json(filtered)
 }
 
 /// Try to parse `{country}/{subdivision}/{YYYY}/{MM}/{DD}/...` from a path.

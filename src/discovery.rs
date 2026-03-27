@@ -25,6 +25,7 @@ async fn register_node(
     let mut body = serde_json::json!({
         "iroh_node_id": node_id,
         "iroh_quic_port": config.quic_port,
+        "iroh_sidecar_port": config.port,
         "type": "iroh-sidecar",
     });
 
@@ -57,7 +58,7 @@ async fn register_node(
 }
 
 /// Discover other iroh sidecar peers from OrbitDB.
-/// Returns a list of node ID strings for peers with iroh_node_id fields.
+/// Returns a list of DiscoveredPeer with node IDs and sidecar HTTP URLs.
 /// Also registers discovered peer addresses in the endpoint's address lookup
 /// and joins them via gossip.
 async fn discover_peers(
@@ -67,7 +68,7 @@ async fn discover_peers(
     endpoint: &Endpoint,
     memory_lookup: &MemoryLookup,
     gossip: &GossipHandle,
-) -> Result<Vec<String>> {
+) -> Result<Vec<DiscoveredPeer>> {
     let url = format!("{}/nodes", config.orbitdb_url);
 
     let resp = client
@@ -101,11 +102,10 @@ async fn discover_peers(
             Err(_) => continue,
         };
 
-        peers.push(node_id.to_string());
-
         // Build an EndpointAddr with whatever addressing info we have
         let mut endpoint_addr = EndpointAddr::new(pk);
         let mut has_address = false;
+        let mut sidecar_url: Option<String> = None;
 
         if let Some(addr_str) = node["iroh_address"].as_str() {
             if !addr_str.is_empty() {
@@ -114,6 +114,11 @@ async fn discover_peers(
                     let sock_addr = SocketAddr::new(ip, port);
                     endpoint_addr = endpoint_addr.with_ip_addr(sock_addr);
                     has_address = true;
+
+                    // Build sidecar HTTP URL for path-index reconciliation
+                    let sidecar_port = node["iroh_sidecar_port"].as_u64().unwrap_or(4400) as u16;
+                    sidecar_url = Some(format!("http://{}:{}", ip, sidecar_port));
+
                     debug!(
                         peer = %&node_id[..16.min(node_id.len())],
                         address = %sock_addr,
@@ -122,6 +127,11 @@ async fn discover_peers(
                 }
             }
         }
+
+        peers.push(DiscoveredPeer {
+            node_id: node_id.to_string(),
+            sidecar_url,
+        });
 
         // Add relay URLs from the peer
         if let Some(relays) = node["iroh_relay_urls"].as_array() {
@@ -202,8 +212,17 @@ async fn register_store_scope(
     Ok(())
 }
 
+/// Info about a discovered peer, including its iroh node ID and sidecar HTTP URL.
+#[derive(Debug, Clone)]
+pub struct DiscoveredPeer {
+    pub node_id: String,
+    /// Sidecar HTTP URL for path-index reconciliation (e.g. "http://203.0.113.50:4400").
+    /// None if the peer didn't advertise an address or sidecar port.
+    pub sidecar_url: Option<String>,
+}
+
 /// Spawn the discovery loop. Registers this node in OrbitDB and periodically
-/// discovers peers. Returns a shared list of discovered peer node IDs.
+/// discovers peers. Returns a shared list of discovered peers.
 pub fn spawn_discovery_loop(
     config: Arc<Config>,
     endpoint: Endpoint,
@@ -211,8 +230,8 @@ pub fn spawn_discovery_loop(
     store: Arc<BlobStore>,
     memory_lookup: MemoryLookup,
     gossip: Arc<GossipHandle>,
-) -> Arc<RwLock<Vec<String>>> {
-    let discovered_peers: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+) -> Arc<RwLock<Vec<DiscoveredPeer>>> {
+    let discovered_peers: Arc<RwLock<Vec<DiscoveredPeer>>> = Arc::new(RwLock::new(Vec::new()));
     let peers_clone = Arc::clone(&discovered_peers);
 
     tokio::spawn(async move {
@@ -262,8 +281,8 @@ pub fn spawn_discovery_loop(
             {
                 Ok(new_peers) => {
                     let count = new_peers.len();
-                    let mut peers = peers_clone.write().await;
-                    *peers = new_peers;
+                    let mut current = peers_clone.write().await;
+                    *current = new_peers;
                     debug!(peer_count = count, "Updated discovered peers list");
                 }
                 Err(e) => {

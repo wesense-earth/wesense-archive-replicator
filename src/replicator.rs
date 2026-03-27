@@ -193,13 +193,13 @@ impl Replicator {
     }
 }
 
-/// Spawn the reconciliation loop that periodically checks OrbitDB attestations
-/// for archives we might have missed via gossip.
+/// Spawn the reconciliation loop that periodically queries peer sidecars'
+/// path indexes for archives we might have missed via gossip.
 pub fn spawn_reconciliation_loop(
     config: Arc<Config>,
     fetch_tx: mpsc::Sender<FetchRequest>,
     stats: Arc<ReplicationStats>,
-    discovered_peers: Arc<RwLock<Vec<String>>>,
+    discovered_peers: Arc<RwLock<Vec<crate::discovery::DiscoveredPeer>>>,
 ) {
     if config.reconcile_interval_secs == 0 {
         info!("Reconciliation disabled (interval = 0)");
@@ -233,80 +233,113 @@ async fn run_reconciliation(
     config: &Config,
     fetch_tx: &mpsc::Sender<FetchRequest>,
     stats: &ReplicationStats,
-    discovered_peers: &RwLock<Vec<String>>,
+    discovered_peers: &RwLock<Vec<crate::discovery::DiscoveredPeer>>,
 ) -> Result<()> {
-    info!("Starting reconciliation cycle");
-
-    let client = reqwest::Client::new();
-    let url = format!("{}/attestations", config.orbitdb_url);
-
-    let resp = client
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-        .context("Failed to fetch attestations from OrbitDB")?;
-
-    if !resp.status().is_success() {
-        anyhow::bail!(
-            "OrbitDB attestations returned status {}",
-            resp.status()
-        );
-    }
-
-    let body: serde_json::Value = resp.json().await?;
-    let attestations = body["attestations"]
-        .as_array()
-        .map(|a| a.to_vec())
-        .unwrap_or_default();
-
-    // Get a source peer for downloads (any discovered peer)
     let peers = discovered_peers.read().await;
-    let source_node = peers.first().cloned().unwrap_or_default();
+    let peers_with_urls: Vec<_> = peers
+        .iter()
+        .filter_map(|p| {
+            p.sidecar_url
+                .as_ref()
+                .map(|url| (p.node_id.clone(), url.clone()))
+        })
+        .collect();
     drop(peers);
 
-    let mut sent = 0u64;
-    for att in &attestations {
-        let hash = match att["iroh_blake3_hash"].as_str() {
-            Some(h) if !h.is_empty() => h,
-            _ => continue, // No iroh hash — skip
-        };
-
-        let path = match att["path"].as_str() {
-            Some(p) if !p.is_empty() => p,
-            _ => continue, // No path — skip
-        };
-
-        // Extract country/subdivision from path
-        let (country, subdivision) = match parse_archive_path(path) {
-            Some((c, s, _)) => (c, s),
-            None => continue,
-        };
-
-        if source_node.is_empty() {
-            debug!(path, "No discovered peers for reconciliation download");
-            continue;
-        }
-
-        let req = FetchRequest {
-            hash: hash.to_string(),
-            path: path.to_string(),
-            country,
-            subdivision,
-            size: att["size"].as_u64().unwrap_or(0),
-            source_node: source_node.clone(),
-        };
-
-        if let Err(e) = fetch_tx.try_send(req) {
-            warn!(error = %e, path, "Failed to send reconciliation fetch request");
-        } else {
-            sent += 1;
-        }
+    if peers_with_urls.is_empty() {
+        debug!("No peers with sidecar URLs for reconciliation");
+        return Ok(());
     }
 
     info!(
-        attestations_checked = attestations.len(),
-        fetch_requests_sent = sent,
+        peer_count = peers_with_urls.len(),
+        "Starting reconciliation cycle"
+    );
+
+    let client = reqwest::Client::new();
+    let mut total_checked = 0u64;
+    let mut total_sent = 0u64;
+
+    for (peer_node_id, sidecar_url) in &peers_with_urls {
+        let url = format!("{}/path-index", sidecar_url);
+
+        let resp = match client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                debug!(
+                    peer = %&peer_node_id[..16.min(peer_node_id.len())],
+                    status = %r.status(),
+                    "Peer path-index returned non-success"
+                );
+                continue;
+            }
+            Err(e) => {
+                debug!(
+                    peer = %&peer_node_id[..16.min(peer_node_id.len())],
+                    error = %e,
+                    "Failed to fetch path-index from peer"
+                );
+                continue;
+            }
+        };
+
+        let index: std::collections::BTreeMap<String, serde_json::Value> =
+            match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    debug!(error = %e, "Failed to parse peer path-index response");
+                    continue;
+                }
+            };
+
+        for (path, entry) in &index {
+            total_checked += 1;
+
+            let hash = match entry["hash"].as_str() {
+                Some(h) if !h.is_empty() => h,
+                _ => continue,
+            };
+
+            let size = entry["size"].as_u64().unwrap_or(0);
+
+            // Extract country/subdivision from path
+            let (country, subdivision) = match parse_archive_path(path) {
+                Some((c, s, _)) => (c, s),
+                None => continue,
+            };
+
+            let req = FetchRequest {
+                hash: hash.to_string(),
+                path: path.to_string(),
+                country,
+                subdivision,
+                size,
+                source_node: peer_node_id.clone(),
+            };
+
+            if let Err(e) = fetch_tx.try_send(req) {
+                warn!(error = %e, path, "Failed to send reconciliation fetch request");
+            } else {
+                total_sent += 1;
+            }
+        }
+
+        info!(
+            peer = %&peer_node_id[..16.min(peer_node_id.len())],
+            entries = index.len(),
+            "Fetched path-index from peer"
+        );
+    }
+
+    info!(
+        entries_checked = total_checked,
+        fetch_requests_sent = total_sent,
+        peers_queried = peers_with_urls.len(),
         "Reconciliation cycle complete"
     );
     stats.record_reconciliation().await;
