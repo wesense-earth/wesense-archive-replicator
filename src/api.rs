@@ -69,6 +69,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         )
         .route("/status", get(status))
         .route("/path-index", get(path_index))
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)) // 64MB — Parquet archives can be large for dense regions
         .with_state(state)
 }
 
