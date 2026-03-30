@@ -21,6 +21,10 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # Stage 3: Build application (only this layer rebuilds on src/ changes)
 FROM deps AS builder
 COPY Cargo.toml Cargo.lock ./
+
+# Bust cache for application code on every CI build
+ARG CACHE_BUST=1
+
 COPY src/ src/
 RUN cargo build --release
 
