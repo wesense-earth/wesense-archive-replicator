@@ -50,7 +50,12 @@ pub struct Config {
     /// OrbitDB HTTP API URL for peer discovery.
     pub orbitdb_url: String,
     /// Public address to announce to other peers (IP or hostname).
+    /// Ignored when proxy_router is set (proxied station).
     pub announce_address: Option<String>,
+    /// LAN IP of the WeSense proxy station handling WAN connectivity.
+    /// When set: this is a proxied station — don't register ANNOUNCE_ADDRESS in OrbitDB,
+    /// connect to the proxy peer via this LAN IP for iroh gossip.
+    pub wesense_proxy: Option<String>,
     /// DERP relay URLs for NAT traversal fallback (e.g. `https://derp.wesense.earth`).
     pub relay_urls: Vec<String>,
 }
@@ -83,6 +88,7 @@ impl Config {
             orbitdb_url: std::env::var("ORBITDB_URL")
                 .unwrap_or_else(|_| "http://wesense-orbitdb:5200".to_string()),
             announce_address: std::env::var("ANNOUNCE_ADDRESS").ok().filter(|s| !s.is_empty()),
+            wesense_proxy: std::env::var("WESENSE_PROXY").ok().filter(|s| !s.is_empty()),
             relay_urls: std::env::var("IROH_RELAY_URLS")
                 .ok()
                 .map(|v| {

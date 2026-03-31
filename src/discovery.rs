@@ -29,8 +29,12 @@ async fn register_node(
         "type": "iroh-sidecar",
     });
 
-    if let Some(ref addr) = config.announce_address {
-        body["iroh_address"] = serde_json::json!(addr);
+    // Proxied stations don't register their WAN address — they're not directly
+    // reachable. Only register iroh_address when not proxied.
+    if config.wesense_proxy.is_none() {
+        if let Some(ref addr) = config.announce_address {
+            body["iroh_address"] = serde_json::json!(addr);
+        }
     }
 
     if !config.relay_urls.is_empty() {
@@ -237,6 +241,13 @@ pub fn spawn_discovery_loop(
     tokio::spawn(async move {
         let client = reqwest::Client::new();
 
+        if let Some(ref proxy_ip) = config.wesense_proxy {
+            info!(
+                proxy_ip = %proxy_ip,
+                "Proxied station — will connect to proxy peer via LAN for iroh gossip"
+            );
+        }
+
         // Initial registration with retries
         for attempt in 1..=5u32 {
             match register_node(&config, &node_id, &client).await {
@@ -275,12 +286,39 @@ pub fn spawn_discovery_loop(
                 debug!(error = %e, "OrbitDB store scope registration failed");
             }
 
-            // Discover peers and wire them into endpoint + gossip
+            // Discover peers and wire them into endpoint + gossip.
             match discover_peers(&config, &node_id, &client, &endpoint, &memory_lookup, &gossip)
                 .await
             {
                 Ok(new_peers) => {
                     let count = new_peers.len();
+
+                    // Proxied station: also connect to the proxy peer via LAN IP.
+                    // OrbitDB discovery registers the proxy peer's WAN IP, which can't
+                    // be reached from behind the same NAT. Override with LAN address.
+                    if let Some(ref proxy_ip) = config.wesense_proxy {
+                        for peer in &new_peers {
+                            // Connect to discovered peers via LAN IP instead of WAN
+                            if let Ok(ip) = proxy_ip.parse::<std::net::IpAddr>() {
+                                if let Ok(pk) = peer.node_id.parse::<PublicKey>() {
+                                    let proxy_addr = SocketAddr::new(ip, config.quic_port);
+                                    let endpoint_addr = EndpointAddr::new(pk).with_ip_addr(proxy_addr);
+                                    memory_lookup.add_endpoint_info(endpoint_addr);
+                                    if let Err(e) = gossip.join_peers(vec![pk]).await {
+                                        debug!(error = %e, "Failed to join proxy peer via LAN");
+                                    } else {
+                                        info!(
+                                            proxy_ip = %proxy_ip,
+                                            peer = %&peer.node_id[..16.min(peer.node_id.len())],
+                                            "Joined proxy peer via LAN address"
+                                        );
+                                    }
+                                    break; // Only need one proxy peer
+                                }
+                            }
+                        }
+                    }
+
                     let mut current = peers_clone.write().await;
                     *current = new_peers;
                     debug!(peer_count = count, "Updated discovered peers list");
