@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/wesense-iroh-sidecar /usr/local/bin/
+COPY --from=builder /build/target/release/wesense-archive-replicator /usr/local/bin/
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 

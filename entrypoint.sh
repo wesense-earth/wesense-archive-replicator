@@ -9,4 +9,4 @@ mkdir -p /app/data
 chown -R "$PUID:$PGID" /app/data
 
 exec setpriv --reuid="$PUID" --regid="$PGID" --clear-groups \
-    /usr/local/bin/wesense-iroh-sidecar "$@"
+    /usr/local/bin/wesense-archive-replicator "$@"

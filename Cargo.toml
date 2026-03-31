@@ -1,8 +1,8 @@
 [package]
-name = "wesense-iroh-sidecar"
+name = "wesense-archive-replicator"
 version = "0.1.0"
 edition = "2021"
-description = "Iroh blob store + gossip sidecar for WeSense storage gateway"
+description = "WeSense archive replicator — BLAKE3 blob store + P2P gossip replication"
 
 [dependencies]
 iroh = "0.96"
