@@ -150,12 +150,14 @@ async fn main() -> Result<()> {
 
     let config = Arc::new(config);
 
-    let gossip_handle = Arc::new(GossipHandle::new(
+    let mut gossip_handle = GossipHandle::new(
         gossip_raw.clone(),
         &config.gossip_topic,
         node_id_str.clone(),
-        Some(fetch_tx.clone()),
-    ));
+        Some(fetch_tx),
+    );
+    gossip_handle.set_index(Arc::clone(&index));
+    let gossip_handle = Arc::new(gossip_handle);
 
     // 9. Wire protocols into the router
     let endpoint_for_discovery = endpoint.clone();
@@ -185,7 +187,7 @@ async fn main() -> Result<()> {
     tokio::spawn(replicator.run(fetch_rx));
 
     // 12. Spawn OrbitDB discovery loop
-    let discovered_peers = discovery::spawn_discovery_loop(
+    let _discovered_peers = discovery::spawn_discovery_loop(
         Arc::clone(&config),
         endpoint_for_discovery,
         node_id_str.clone(),
@@ -194,15 +196,9 @@ async fn main() -> Result<()> {
         Arc::clone(&gossip_handle),
     );
 
-    // 13. Spawn reconciliation loop
-    replicator::spawn_reconciliation_loop(
-        Arc::clone(&config),
-        fetch_tx.clone(),
-        Arc::clone(&stats),
-        Arc::clone(&discovered_peers),
-    );
-
-    // 14. Build shared app state for axum
+    // 13. Build shared app state for axum
+    // Note: HTTP reconciliation removed — catch-up now handled by gossip
+    // NeighborUp re-announcements (see gossip.rs). No HTTP port exposure needed.
     let app_state = Arc::new(AppState {
         store: Arc::clone(&blob_store),
         index,

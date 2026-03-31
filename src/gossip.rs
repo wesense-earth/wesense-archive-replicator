@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
+use crate::api::parse_archive_path;
+use crate::index::PathIndex;
+
 /// An archive announcement broadcast over gossip.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveAnnouncement {
@@ -56,6 +59,8 @@ pub struct GossipHandle {
     node_id: String,
     fetch_tx: Option<mpsc::Sender<FetchRequest>>,
     connected_peers: AtomicUsize,
+    /// Path index for re-announcing local archives on peer connect (catch-up).
+    index: Option<Arc<PathIndex>>,
 }
 
 impl GossipHandle {
@@ -82,7 +87,13 @@ impl GossipHandle {
             node_id,
             fetch_tx,
             connected_peers: AtomicUsize::new(0),
+            index: None,
         }
+    }
+
+    /// Set the path index for peer catch-up re-announcements.
+    pub fn set_index(&mut self, index: Arc<PathIndex>) {
+        self.index = Some(index);
     }
 
     /// Number of currently connected gossip peers.
@@ -239,6 +250,49 @@ impl GossipHandle {
                 Ok(Event::NeighborUp(peer_id)) => {
                     let count = self.connected_peers.fetch_add(1, Ordering::Relaxed) + 1;
                     info!(peer = %peer_id, connected = count, "Gossip peer connected");
+
+                    // Re-announce all local archives so the new peer can catch up
+                    // on any announcements it missed while offline.
+                    if let Some(ref index) = self.index {
+                        let entries = index.dump().await;
+                        if !entries.is_empty() {
+                            info!(
+                                peer = %peer_id,
+                                archives = entries.len(),
+                                "Re-announcing local archives for peer catch-up"
+                            );
+                            let sender = self.sender.read().await;
+                            if let Some(ref s) = *sender {
+                                let mut announced = 0u64;
+                                for (path, entry) in &entries {
+                                    // Parse path to extract country/subdivision/date
+                                    if let Some((country, subdivision, date)) = parse_archive_path(path) {
+                                        let ann = ArchiveAnnouncement {
+                                            msg_type: "archive_available".to_string(),
+                                            country,
+                                            subdivision,
+                                            date,
+                                            hash: entry.hash.clone(),
+                                            node_id: self.node_id.clone(),
+                                            path: path.clone(),
+                                            size: entry.size,
+                                        };
+                                        if let Ok(json) = serde_json::to_vec(&ann) {
+                                            if s.broadcast(Bytes::from(json)).await.is_ok() {
+                                                announced += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                                info!(
+                                    peer = %peer_id,
+                                    announced,
+                                    total = entries.len(),
+                                    "Peer catch-up re-announcement complete"
+                                );
+                            }
+                        }
+                    }
                 }
                 Ok(Event::NeighborDown(peer_id)) => {
                     let count = self.connected_peers.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);

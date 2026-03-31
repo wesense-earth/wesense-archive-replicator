@@ -1,4 +1,7 @@
-//! Replicator — downloads blobs from peers based on gossip announcements and reconciliation.
+//! Replicator — downloads blobs from peers based on gossip announcements.
+//!
+//! Catch-up for missed gossip is handled by NeighborUp re-announcements in gossip.rs.
+//! No HTTP reconciliation needed — everything flows over QUIC via gossip + blob downloads.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -8,9 +11,8 @@ use iroh::PublicKey;
 use iroh_blobs::api::downloader::Downloader;
 use iroh_blobs::Hash;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
-use crate::api::parse_archive_path;
 use crate::config::Config;
 use crate::gossip::FetchRequest;
 use crate::index::PathIndex;
@@ -191,158 +193,4 @@ impl Replicator {
 
         Ok(())
     }
-}
-
-/// Spawn the reconciliation loop that periodically queries peer sidecars'
-/// path indexes for archives we might have missed via gossip.
-pub fn spawn_reconciliation_loop(
-    config: Arc<Config>,
-    fetch_tx: mpsc::Sender<FetchRequest>,
-    stats: Arc<ReplicationStats>,
-    discovered_peers: Arc<RwLock<Vec<crate::discovery::DiscoveredPeer>>>,
-) {
-    if config.reconcile_interval_secs == 0 {
-        info!("Reconciliation disabled (interval = 0)");
-        return;
-    }
-
-    let interval = std::time::Duration::from_secs(config.reconcile_interval_secs);
-
-    tokio::spawn(async move {
-        // Initial delay — let discovery find peers first
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-
-        info!(
-            interval_secs = config.reconcile_interval_secs,
-            "Reconciliation loop started"
-        );
-
-        loop {
-            if let Err(e) =
-                run_reconciliation(&config, &fetch_tx, &stats, &discovered_peers).await
-            {
-                warn!(error = %e, "Reconciliation cycle failed");
-            }
-
-            tokio::time::sleep(interval).await;
-        }
-    });
-}
-
-async fn run_reconciliation(
-    config: &Config,
-    fetch_tx: &mpsc::Sender<FetchRequest>,
-    stats: &ReplicationStats,
-    discovered_peers: &RwLock<Vec<crate::discovery::DiscoveredPeer>>,
-) -> Result<()> {
-    let peers = discovered_peers.read().await;
-    let peers_with_urls: Vec<_> = peers
-        .iter()
-        .filter_map(|p| {
-            p.sidecar_url
-                .as_ref()
-                .map(|url| (p.node_id.clone(), url.clone()))
-        })
-        .collect();
-    drop(peers);
-
-    if peers_with_urls.is_empty() {
-        debug!("No peers with sidecar URLs for reconciliation");
-        return Ok(());
-    }
-
-    info!(
-        peer_count = peers_with_urls.len(),
-        "Starting reconciliation cycle"
-    );
-
-    let client = reqwest::Client::new();
-    let mut total_checked = 0u64;
-    let mut total_sent = 0u64;
-
-    for (peer_node_id, sidecar_url) in &peers_with_urls {
-        let url = format!("{}/path-index", sidecar_url);
-
-        let resp = match client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(30))
-            .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => r,
-            Ok(r) => {
-                debug!(
-                    peer = %&peer_node_id[..16.min(peer_node_id.len())],
-                    status = %r.status(),
-                    "Peer path-index returned non-success"
-                );
-                continue;
-            }
-            Err(e) => {
-                debug!(
-                    peer = %&peer_node_id[..16.min(peer_node_id.len())],
-                    error = %e,
-                    "Failed to fetch path-index from peer"
-                );
-                continue;
-            }
-        };
-
-        let index: std::collections::BTreeMap<String, serde_json::Value> =
-            match resp.json().await {
-                Ok(v) => v,
-                Err(e) => {
-                    debug!(error = %e, "Failed to parse peer path-index response");
-                    continue;
-                }
-            };
-
-        for (path, entry) in &index {
-            total_checked += 1;
-
-            let hash = match entry["hash"].as_str() {
-                Some(h) if !h.is_empty() => h,
-                _ => continue,
-            };
-
-            let size = entry["size"].as_u64().unwrap_or(0);
-
-            // Extract country/subdivision from path
-            let (country, subdivision) = match parse_archive_path(path) {
-                Some((c, s, _)) => (c, s),
-                None => continue,
-            };
-
-            let req = FetchRequest {
-                hash: hash.to_string(),
-                path: path.to_string(),
-                country,
-                subdivision,
-                size,
-                source_node: peer_node_id.clone(),
-            };
-
-            if let Err(e) = fetch_tx.try_send(req) {
-                warn!(error = %e, path, "Failed to send reconciliation fetch request");
-            } else {
-                total_sent += 1;
-            }
-        }
-
-        info!(
-            peer = %&peer_node_id[..16.min(peer_node_id.len())],
-            entries = index.len(),
-            "Fetched path-index from peer"
-        );
-    }
-
-    info!(
-        entries_checked = total_checked,
-        fetch_requests_sent = total_sent,
-        peers_queried = peers_with_urls.len(),
-        "Reconciliation cycle complete"
-    );
-    stats.record_reconciliation().await;
-
-    Ok(())
 }
