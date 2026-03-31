@@ -301,7 +301,8 @@ pub fn spawn_discovery_loop(
                             // Connect to discovered peers via LAN IP instead of WAN
                             if let Ok(ip) = proxy_ip.parse::<std::net::IpAddr>() {
                                 if let Ok(pk) = peer.node_id.parse::<PublicKey>() {
-                                    let proxy_addr = SocketAddr::new(ip, config.quic_port);
+                                    let proxy_port = config.wesense_proxy_iroh_port.unwrap_or(config.quic_port);
+                                    let proxy_addr = SocketAddr::new(ip, proxy_port);
                                     let endpoint_addr = EndpointAddr::new(pk).with_ip_addr(proxy_addr);
                                     memory_lookup.add_endpoint_info(endpoint_addr);
                                     if let Err(e) = gossip.join_peers(vec![pk]).await {

@@ -56,6 +56,8 @@ pub struct Config {
     /// When set: this is a proxied station — don't register ANNOUNCE_ADDRESS in OrbitDB,
     /// connect to the proxy peer via this LAN IP for iroh gossip.
     pub wesense_proxy: Option<String>,
+    /// Override QUIC port when connecting to the proxy peer (default: same as quic_port).
+    pub wesense_proxy_iroh_port: Option<u16>,
     /// DERP relay URLs for NAT traversal fallback (e.g. `https://derp.wesense.earth`).
     pub relay_urls: Vec<String>,
 }
@@ -89,6 +91,9 @@ impl Config {
                 .unwrap_or_else(|_| "http://wesense-orbitdb:5200".to_string()),
             announce_address: std::env::var("ANNOUNCE_ADDRESS").ok().filter(|s| !s.is_empty()),
             wesense_proxy: std::env::var("WESENSE_PROXY").ok().filter(|s| !s.is_empty()),
+            wesense_proxy_iroh_port: std::env::var("WESENSE_PROXY_IROH_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok()),
             relay_urls: std::env::var("IROH_RELAY_URLS")
                 .ok()
                 .map(|v| {
