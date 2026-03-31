@@ -47,10 +47,8 @@ pub struct Config {
     /// Store scope — which country/subdivision archives to download.
     /// Default "*/*" = replicate all. Set to specific patterns to limit.
     pub store_scope: Vec<ScopePattern>,
-    /// OrbitDB HTTP API URL for peer discovery and reconciliation.
+    /// OrbitDB HTTP API URL for peer discovery.
     pub orbitdb_url: String,
-    /// Interval in seconds between reconciliation runs. 0 = disabled.
-    pub reconcile_interval_secs: u64,
     /// Public address to announce to other peers (IP or hostname).
     pub announce_address: Option<String>,
     /// DERP relay URLs for NAT traversal fallback (e.g. `https://derp.wesense.earth`).
@@ -84,10 +82,6 @@ impl Config {
             store_scope,
             orbitdb_url: std::env::var("ORBITDB_URL")
                 .unwrap_or_else(|_| "http://wesense-orbitdb:5200".to_string()),
-            reconcile_interval_secs: std::env::var("IROH_RECONCILE_INTERVAL")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(900),
             announce_address: std::env::var("ANNOUNCE_ADDRESS").ok().filter(|s| !s.is_empty()),
             relay_urls: std::env::var("IROH_RELAY_URLS")
                 .ok()
