@@ -233,7 +233,7 @@ impl GossipHandle {
                                     source_node: ann.node_id.clone(),
                                 };
 
-                                if let Err(e) = tx.try_send(req) {
+                                if let Err(e) = tx.send(req).await {
                                     warn!(error = %e, "Failed to forward fetch request to replicator");
                                 }
                             }
@@ -251,21 +251,28 @@ impl GossipHandle {
                     let count = self.connected_peers.fetch_add(1, Ordering::Relaxed) + 1;
                     info!(peer = %peer_id, connected = count, "Gossip peer connected");
 
-                    // Re-announce all local archives so the new peer can catch up
-                    // on any announcements it missed while offline.
+                    // Re-announce all local archives in a separate task so the
+                    // receive loop isn't blocked during the broadcast. Broadcasting
+                    // 80K+ messages inline would prevent receiving any gossip from
+                    // the new peer until the broadcast completes.
                     if let Some(ref index) = self.index {
-                        let entries = index.dump().await;
-                        if !entries.is_empty() {
-                            info!(
-                                peer = %peer_id,
-                                archives = entries.len(),
-                                "Re-announcing local archives for peer catch-up"
-                            );
-                            let sender = self.sender.read().await;
-                            if let Some(ref s) = *sender {
+                        let index = Arc::clone(index);
+                        let node_id = self.node_id.clone();
+                        let sender = self.sender.read().await.clone();
+                        let peer_id_str = peer_id.to_string();
+                        if let Some(sender) = sender {
+                            tokio::spawn(async move {
+                                let entries = index.dump().await;
+                                if entries.is_empty() {
+                                    return;
+                                }
+                                info!(
+                                    peer = %peer_id_str,
+                                    archives = entries.len(),
+                                    "Re-announcing local archives for peer catch-up"
+                                );
                                 let mut announced = 0u64;
                                 for (path, entry) in &entries {
-                                    // Parse path to extract country/subdivision/date
                                     if let Some((country, subdivision, date)) = parse_archive_path(path) {
                                         let ann = ArchiveAnnouncement {
                                             msg_type: "archive_available".to_string(),
@@ -273,24 +280,27 @@ impl GossipHandle {
                                             subdivision,
                                             date,
                                             hash: entry.hash.clone(),
-                                            node_id: self.node_id.clone(),
+                                            node_id: node_id.clone(),
                                             path: path.clone(),
                                             size: entry.size,
                                         };
                                         if let Ok(json) = serde_json::to_vec(&ann) {
-                                            if s.broadcast(Bytes::from(json)).await.is_ok() {
-                                                announced += 1;
-                                            }
+                                            let _ = sender.broadcast(Bytes::from(json)).await;
+                                            announced += 1;
                                         }
+                                    }
+                                    // Yield periodically to avoid starving other tasks
+                                    if announced % 1000 == 0 {
+                                        tokio::task::yield_now().await;
                                     }
                                 }
                                 info!(
-                                    peer = %peer_id,
+                                    peer = %peer_id_str,
                                     announced,
                                     total = entries.len(),
                                     "Peer catch-up re-announcement complete"
                                 );
-                            }
+                            });
                         }
                     }
                 }
