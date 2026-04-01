@@ -28,7 +28,7 @@ impl ScopePattern {
     pub fn matches(&self, country: &str, subdivision: &str) -> bool {
         let country_lower = country.to_lowercase();
         let subdiv_lower = subdivision.to_lowercase();
-        self.country == country_lower
+        (self.country == "*" || self.country == country_lower)
             && (self.subdivision == "*" || self.subdivision == subdiv_lower)
     }
 }
