@@ -149,6 +149,7 @@ async fn main() -> Result<()> {
     let (fetch_tx, fetch_rx) = mpsc::channel::<FetchRequest>(10_000);
 
     let config = Arc::new(config);
+    let blob_store = Arc::new(blob_store);
 
     let mut gossip_handle = GossipHandle::new(
         gossip_raw.clone(),
@@ -157,6 +158,8 @@ async fn main() -> Result<()> {
         Some(fetch_tx),
     );
     gossip_handle.set_index(Arc::clone(&index));
+    gossip_handle.set_store(Arc::clone(&blob_store));
+    gossip_handle.set_config(Arc::clone(&config));
     let gossip_handle = Arc::new(gossip_handle);
 
     // 9. Wire protocols into the router
@@ -175,7 +178,6 @@ async fn main() -> Result<()> {
         .context("Failed to start gossip")?;
 
     // 11. Create and spawn the replicator worker
-    let blob_store = Arc::new(blob_store);
     let stats = Arc::new(ReplicationStats::new());
     let replicator = Replicator::new(
         downloader,

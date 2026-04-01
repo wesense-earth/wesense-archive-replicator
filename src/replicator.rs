@@ -129,8 +129,8 @@ impl Replicator {
     }
 
     async fn handle_fetch_request(&self, req: &FetchRequest) -> Result<()> {
-        // 1. Check store scope
-        if !self.config.matches_store_scope(&req.country, &req.subdivision) {
+        // 1. Check store scope (skip for internal sync blobs)
+        if !req.path.starts_with("_sync/") && !self.config.matches_store_scope(&req.country, &req.subdivision) {
             debug!(
                 path = %req.path,
                 country = %req.country,

@@ -113,6 +113,18 @@ impl BlobStore {
         Ok(())
     }
 
+    /// Read blob bytes by BLAKE3 hash (hex string). Used for reading downloaded blobs
+    /// that aren't in the path index (e.g. peer index blobs during catch-up sync).
+    pub async fn get_by_hash(&self, hash_hex: &str) -> Result<Option<Bytes>> {
+        let hash = hash_hex
+            .parse::<Hash>()
+            .context("Invalid BLAKE3 hash")?;
+        match self.store.get_bytes(hash).await {
+            Ok(data) => Ok(Some(data)),
+            Err(_) => Ok(None),
+        }
+    }
+
     /// Total number of indexed blobs.
     pub async fn blob_count(&self) -> usize {
         self.index.len().await
