@@ -590,8 +590,14 @@ impl GossipHandle {
                                                     source_node: node_id.clone(),
                                                 };
 
-                                                if let Err(_) = tx.try_send(req) {
-                                                    // Channel full — remaining items caught up next cycle
+                                                // Use send().await — this blocks until the replicator
+                                                // consumes from the channel, providing natural backpressure.
+                                                // Safe here because we're in a spawned task, not the
+                                                // receive loop. The catch-up feeds at exactly the rate
+                                                // the replicator can download, no matter how many
+                                                // archives need syncing.
+                                                if let Err(e) = tx.send(req).await {
+                                                    warn!(error = %e, "Replicator channel closed during catch-up");
                                                     break;
                                                 }
                                                 queued += 1;
