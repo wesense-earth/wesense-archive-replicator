@@ -289,12 +289,13 @@ impl GossipHandle {
                                             announced += 1;
                                         }
                                     }
-                                    // Rate-limit to avoid flooding the gossip receiver buffer.
-                                    // Without this, 80K+ broadcasts overflow iroh-gossip's
-                                    // internal buffer, triggering Event::Lagged and dropping
-                                    // all incoming messages from peers.
-                                    if announced % 100 == 0 {
-                                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                                    // Rate-limit to avoid flooding the gossip receiver buffer
+                                    // AND the fetch channel. The replicator downloads at ~100/sec.
+                                    // Broadcasting faster than the replicator can consume causes
+                                    // the 10K fetch channel to overflow and drop announcements.
+                                    // 10 messages per 100ms = ~100/sec matches replicator throughput.
+                                    if announced % 10 == 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                     }
                                 }
                                 info!(
