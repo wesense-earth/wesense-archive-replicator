@@ -141,8 +141,8 @@ impl Replicator {
             return Ok(());
         }
 
-        // 2. Check if already in index
-        if self.index.exists(&req.path).await {
+        // 2. Check if already in index (skip for _sync/ blobs — they change each cycle)
+        if !req.path.starts_with("_sync/") && self.index.exists(&req.path).await {
             debug!(path = %req.path, "Archive already exists, skipping");
             self.stats
                 .skipped_existing
