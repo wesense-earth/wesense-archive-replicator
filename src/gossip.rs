@@ -289,9 +289,12 @@ impl GossipHandle {
                                             announced += 1;
                                         }
                                     }
-                                    // Yield periodically to avoid starving other tasks
-                                    if announced % 1000 == 0 {
-                                        tokio::task::yield_now().await;
+                                    // Rate-limit to avoid flooding the gossip receiver buffer.
+                                    // Without this, 80K+ broadcasts overflow iroh-gossip's
+                                    // internal buffer, triggering Event::Lagged and dropping
+                                    // all incoming messages from peers.
+                                    if announced % 100 == 0 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                                     }
                                 }
                                 info!(
