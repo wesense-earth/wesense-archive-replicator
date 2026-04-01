@@ -146,7 +146,7 @@ async fn main() -> Result<()> {
     let gossip_raw = Gossip::builder().spawn(endpoint.clone());
 
     // 8. Create the fetch request channel (gossip → replicator)
-    let (fetch_tx, fetch_rx) = mpsc::channel::<FetchRequest>(256);
+    let (fetch_tx, fetch_rx) = mpsc::channel::<FetchRequest>(10_000);
 
     let config = Arc::new(config);
 

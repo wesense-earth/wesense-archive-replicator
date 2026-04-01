@@ -233,8 +233,8 @@ impl GossipHandle {
                                     source_node: ann.node_id.clone(),
                                 };
 
-                                if let Err(e) = tx.send(req).await {
-                                    warn!(error = %e, "Failed to forward fetch request to replicator");
+                                if let Err(e) = tx.try_send(req) {
+                                    debug!(error = %e, path = %ann.path, "Fetch channel full, skipping (replicator will catch up on next peer connect)");
                                 }
                             }
                         }
