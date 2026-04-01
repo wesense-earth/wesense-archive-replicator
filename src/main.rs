@@ -188,7 +188,10 @@ async fn main() -> Result<()> {
     );
     tokio::spawn(replicator.run(fetch_rx));
 
-    // 12. Spawn OrbitDB discovery loop
+    // 12. Spawn periodic catch-up (every 15 minutes)
+    gossip_handle.spawn_periodic_catchup(900);
+
+    // 13. Spawn OrbitDB discovery loop
     let _discovered_peers = discovery::spawn_discovery_loop(
         Arc::clone(&config),
         endpoint_for_discovery,

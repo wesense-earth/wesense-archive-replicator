@@ -158,6 +158,49 @@ impl GossipHandle {
         Ok(())
     }
 
+    /// Spawn periodic catch-up — sends catchup_request to peers on a schedule.
+    /// Ensures archives are synced even without NeighborUp events (e.g. after
+    /// brief disconnects, or when new archives are created between connections).
+    pub fn spawn_periodic_catchup(self: &Arc<Self>, interval_secs: u64) {
+        if interval_secs == 0 {
+            info!("Periodic catch-up disabled");
+            return;
+        }
+
+        let handle = Arc::clone(self);
+        tokio::spawn(async move {
+            // Initial delay — let gossip connections establish first
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+            info!(interval_secs, "Periodic catch-up started");
+
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+
+                if handle.connected_peers() == 0 {
+                    debug!("No peers connected, skipping periodic catch-up");
+                    continue;
+                }
+
+                info!("Triggering periodic catch-up");
+                let msg = GossipMessage {
+                    msg_type: "catchup_request".to_string(),
+                    node_id: handle.node_id.clone(),
+                    hash: String::new(),
+                    country: String::new(),
+                    subdivision: String::new(),
+                    date: String::new(),
+                    path: String::new(),
+                    size: 0,
+                };
+
+                if let Err(e) = handle.send_message(&msg).await {
+                    warn!(error = %e, "Failed to send periodic catch-up request");
+                }
+            }
+        });
+    }
+
     /// Broadcast an archive announcement (mechanism 1 — real-time).
     pub async fn announce_archive(
         &self,
