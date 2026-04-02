@@ -42,9 +42,6 @@ pub struct GossipMessage {
     pub size: u64,
 }
 
-/// Keep the old name as an alias for compatibility with announce_archive
-pub type ArchiveAnnouncement = GossipMessage;
-
 /// A request to fetch an archive from a peer, sent to the replicator.
 #[derive(Debug, Clone)]
 pub struct FetchRequest {
@@ -311,151 +308,6 @@ impl GossipHandle {
         }
     }
 
-    /// Handle a catchup_index from a peer — download their index, diff, queue missing blobs.
-    async fn handle_catchup_index(&self, from_node: &str, hash: &str, size: u64) {
-        let (Some(ref index), Some(ref store), Some(ref config), Some(ref tx)) =
-            (&self.index, &self.store, &self.config, &self.fetch_tx) else {
-            debug!("Missing dependencies for catch-up index processing");
-            return;
-        };
-
-        info!(
-            peer = &from_node[..16.min(from_node.len())],
-            hash = &hash[..16.min(hash.len())],
-            size,
-            "Received peer index for catch-up, downloading..."
-        );
-
-        // Download the peer's index blob via iroh Downloader.
-        // The Downloader uses the existing QUIC connection (bidirectional).
-        // We create a FetchRequest for the index blob itself.
-        let peer_id: iroh::PublicKey = match from_node.parse() {
-            Ok(pk) => pk,
-            Err(_) => {
-                warn!("Invalid node ID in catch-up index: {}", &from_node[..16.min(from_node.len())]);
-                return;
-            }
-        };
-
-        let blob_hash: iroh_blobs::Hash = match hash.parse() {
-            Ok(h) => h,
-            Err(_) => {
-                warn!("Invalid hash in catch-up index: {}", &hash[..16.min(hash.len())]);
-                return;
-            }
-        };
-
-        // Use the store's inner downloader-compatible interface
-        // Actually, we need the Downloader from main.rs. Instead, register the
-        // blob at a known path and use the FetchRequest mechanism.
-        let index_req = FetchRequest {
-            hash: hash.to_string(),
-            path: format!("_sync/peer_{}.json", &from_node[..16.min(from_node.len())]),
-            country: "_sync".to_string(),
-            subdivision: "index".to_string(),
-            size,
-            source_node: from_node.to_string(),
-        };
-
-        // Send the index download request to the replicator
-        if let Err(e) = tx.try_send(index_req) {
-            warn!(error = %e, "Failed to queue catch-up index download");
-            return;
-        }
-
-        // Wait for the download to complete — poll the store for the blob
-        let index_path = format!("_sync/peer_{}.json", &from_node[..16.min(from_node.len())]);
-        let mut attempts = 0;
-        let peer_index_bytes = loop {
-            attempts += 1;
-            if attempts > 300 {
-                // 5 minutes max wait
-                warn!("Timed out waiting for catch-up index download");
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-            // Check if the blob is in the store now
-            match store.get_by_hash(hash).await {
-                Ok(Some(bytes)) => break bytes,
-                Ok(None) => continue,
-                Err(e) => {
-                    warn!(error = %e, "Error reading catch-up index blob");
-                    return;
-                }
-            }
-        };
-
-        info!(
-            peer = &from_node[..16.min(from_node.len())],
-            bytes = peer_index_bytes.len(),
-            "Downloaded peer index, computing diff..."
-        );
-
-        // Parse the peer's index
-        let peer_entries: std::collections::BTreeMap<String, crate::index::IndexEntry> =
-            match serde_json::from_slice(&peer_index_bytes) {
-                Ok(e) => e,
-                Err(e) => {
-                    warn!(error = %e, "Failed to parse peer index JSON");
-                    return;
-                }
-            };
-
-        // Diff against local index — find entries we're missing
-        let mut queued = 0u64;
-        let mut skipped_scope = 0u64;
-        let mut skipped_existing = 0u64;
-
-        for (path, entry) in &peer_entries {
-            // Skip sync metadata blobs
-            if path.starts_with("_sync/") {
-                continue;
-            }
-
-            // Check store scope
-            if let Some((country, subdivision, _)) = parse_archive_path(path) {
-                if !config.matches_store_scope(&country, &subdivision) {
-                    skipped_scope += 1;
-                    continue;
-                }
-
-                // Check if we already have it
-                if index.exists(path).await {
-                    skipped_existing += 1;
-                    continue;
-                }
-
-                // Queue for download
-                let req = FetchRequest {
-                    hash: entry.hash.clone(),
-                    path: path.clone(),
-                    country,
-                    subdivision,
-                    size: entry.size,
-                    source_node: from_node.to_string(),
-                };
-
-                if let Err(e) = tx.try_send(req) {
-                    debug!(error = %e, path, "Fetch channel full during catch-up diff");
-                    // Channel full — the replicator is busy. The remaining items
-                    // will be caught up on the next peer connect cycle.
-                    break;
-                }
-                queued += 1;
-            }
-        }
-
-        info!(
-            peer = &from_node[..16.min(from_node.len())],
-            peer_entries = peer_entries.len(),
-            queued,
-            skipped_existing,
-            skipped_scope,
-            "Catch-up diff complete"
-        );
-    }
-
     /// Receive loop — processes gossip messages.
     async fn receive_loop(
         &self,
@@ -536,7 +388,7 @@ impl GossipHandle {
                                     let store = self.store.clone();
                                     let config = self.config.clone();
                                     let fetch_tx = self.fetch_tx.clone();
-                                    let self_node_id = self.node_id.clone();
+                                    let _self_node_id = self.node_id.clone();
 
                                     tokio::spawn(async move {
                                         // Reconstruct a minimal handler inline

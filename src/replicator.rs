@@ -77,6 +77,7 @@ impl ReplicationStats {
         *last = Some(path.to_string());
     }
 
+    #[allow(dead_code)]
     async fn record_reconciliation(&self) {
         let mut last = self.last_reconciliation.write().await;
         *last = Some(chrono::Utc::now().to_rfc3339());

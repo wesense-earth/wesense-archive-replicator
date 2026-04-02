@@ -109,7 +109,6 @@ async fn discover_peers(
         // Build an EndpointAddr with whatever addressing info we have
         let mut endpoint_addr = EndpointAddr::new(pk);
         let mut has_address = false;
-        let mut sidecar_url: Option<String> = None;
 
         if let Some(addr_str) = node["iroh_address"].as_str() {
             if !addr_str.is_empty() {
@@ -118,11 +117,6 @@ async fn discover_peers(
                     let sock_addr = SocketAddr::new(ip, port);
                     endpoint_addr = endpoint_addr.with_ip_addr(sock_addr);
                     has_address = true;
-
-                    // Build sidecar HTTP URL for path-index reconciliation
-                    let sidecar_port = node["iroh_sidecar_port"].as_u64().unwrap_or(4400) as u16;
-                    sidecar_url = Some(format!("http://{}:{}", ip, sidecar_port));
-
                     debug!(
                         peer = %&node_id[..16.min(node_id.len())],
                         address = %sock_addr,
@@ -134,7 +128,6 @@ async fn discover_peers(
 
         peers.push(DiscoveredPeer {
             node_id: node_id.to_string(),
-            sidecar_url,
         });
 
         // Add relay URLs from the peer
@@ -216,13 +209,10 @@ async fn register_store_scope(
     Ok(())
 }
 
-/// Info about a discovered peer, including its iroh node ID and sidecar HTTP URL.
+/// Info about a discovered peer.
 #[derive(Debug, Clone)]
 pub struct DiscoveredPeer {
     pub node_id: String,
-    /// Sidecar HTTP URL for path-index reconciliation (e.g. "http://203.0.113.50:4400").
-    /// None if the peer didn't advertise an address or sidecar port.
-    pub sidecar_url: Option<String>,
 }
 
 /// Spawn the discovery loop. Registers this node in OrbitDB and periodically
