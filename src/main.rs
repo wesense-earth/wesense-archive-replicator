@@ -129,24 +129,11 @@ async fn main() -> Result<()> {
     info!(node_id = %node_id_str, quic_port = config.quic_port, "Iroh endpoint bound");
 
     // Create a MemoryLookup for OrbitDB-discovered peer addresses
+    // and direct HTTP proxy discovery (fallback when OrbitDB replication fails)
     let memory_lookup = MemoryLookup::default();
     let address_lookup = endpoint.address_lookup()
         .context("Failed to get address lookup from endpoint")?;
     address_lookup.add(memory_lookup.clone());
-
-    // Enable mDNS for automatic LAN peer discovery.
-    // This lets archive replicators on the same LAN find each other directly
-    // without depending on OrbitDB for node ID exchange. Works even when
-    // OrbitDB replication silently fails.
-    match iroh::address_lookup::MdnsAddressLookup::builder().build(node_id) {
-        Ok(mdns) => {
-            address_lookup.add(mdns);
-            info!("mDNS LAN discovery enabled");
-        }
-        Err(e) => {
-            warn!(error = %e, "Failed to enable mDNS LAN discovery — falling back to OrbitDB only");
-        }
-    }
 
     // 4. Open the blob store
     let blob_store = BlobStore::open(&config.data_dir, Arc::clone(&index))
