@@ -282,40 +282,70 @@ pub fn spawn_discovery_loop(
             {
                 Ok(new_peers) => {
                     let count = new_peers.len();
-
-                    // Proxied station: also connect to the proxy peer via LAN IP.
-                    // OrbitDB discovery registers the proxy peer's WAN IP, which can't
-                    // be reached from behind the same NAT. Override with LAN address.
-                    if let Some(ref proxy_ip) = config.wesense_proxy {
-                        for peer in &new_peers {
-                            // Connect to discovered peers via LAN IP instead of WAN
-                            if let Ok(ip) = proxy_ip.parse::<std::net::IpAddr>() {
-                                if let Ok(pk) = peer.node_id.parse::<PublicKey>() {
-                                    let proxy_port = config.wesense_proxy_iroh_port.unwrap_or(config.quic_port);
-                                    let proxy_addr = SocketAddr::new(ip, proxy_port);
-                                    let endpoint_addr = EndpointAddr::new(pk).with_ip_addr(proxy_addr);
-                                    memory_lookup.add_endpoint_info(endpoint_addr);
-                                    if let Err(e) = gossip.join_peers(vec![pk]).await {
-                                        debug!(error = %e, "Failed to join proxy peer via LAN");
-                                    } else {
-                                        info!(
-                                            proxy_ip = %proxy_ip,
-                                            peer = %&peer.node_id[..16.min(peer.node_id.len())],
-                                            "Joined proxy peer via LAN address"
-                                        );
-                                    }
-                                    break; // Only need one proxy peer
-                                }
-                            }
-                        }
-                    }
-
                     let mut current = peers_clone.write().await;
-                    *current = new_peers;
+                    *current = new_peers.clone();
                     debug!(peer_count = count, "Updated discovered peers list");
                 }
                 Err(e) => {
                     debug!(error = %e, "Peer discovery failed");
+                }
+            }
+
+            // Proxied station: connect to proxy peer via LAN.
+            // First try to get the node ID from OrbitDB discovery. If that fails
+            // (OrbitDB replication not working), query the proxy's status endpoint
+            // directly — it returns the node_id in JSON.
+            if let Some(ref proxy_ip) = config.wesense_proxy {
+                if let Ok(ip) = proxy_ip.parse::<std::net::IpAddr>() {
+                    let proxy_port = config.wesense_proxy_iroh_port.unwrap_or(config.quic_port);
+                    let sidecar_port = 4400u16; // archive replicator HTTP API
+
+                    // Try to get proxy's node ID — first from OrbitDB peers, then direct HTTP
+                    let proxy_node_id: Option<PublicKey> = {
+                        let peers = peers_clone.read().await;
+                        peers.iter()
+                            .find_map(|p| p.node_id.parse::<PublicKey>().ok())
+                    }.or_else(|| {
+                        // OrbitDB didn't have it — query the proxy's status endpoint directly
+                        None
+                    });
+
+                    let proxy_node_id = match proxy_node_id {
+                        Some(pk) => Some(pk),
+                        None => {
+                            // Query proxy's archive replicator status for its node_id
+                            let status_url = format!("http://{}:{}/status", proxy_ip, sidecar_port);
+                            match client.get(&status_url).timeout(std::time::Duration::from_secs(5)).send().await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    match resp.json::<serde_json::Value>().await {
+                                        Ok(body) => {
+                                            body["node_id"].as_str()
+                                                .and_then(|id| id.parse::<PublicKey>().ok())
+                                        }
+                                        Err(_) => None,
+                                    }
+                                }
+                                _ => None,
+                            }
+                        }
+                    };
+
+                    if let Some(pk) = proxy_node_id {
+                        let proxy_addr = SocketAddr::new(ip, proxy_port);
+                        let endpoint_addr = EndpointAddr::new(pk).with_ip_addr(proxy_addr);
+                        memory_lookup.add_endpoint_info(endpoint_addr);
+                        if let Err(e) = gossip.join_peers(vec![pk]).await {
+                            debug!(error = %e, "Failed to join proxy peer via LAN");
+                        } else {
+                            info!(
+                                proxy_ip = %proxy_ip,
+                                peer = %pk.to_string()[..16],
+                                "Joined proxy peer via LAN address"
+                            );
+                        }
+                    } else {
+                        debug!(proxy_ip = %proxy_ip, "Could not resolve proxy peer node ID");
+                    }
                 }
             }
         }
