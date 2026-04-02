@@ -127,6 +127,20 @@ async fn main() -> Result<()> {
     let memory_lookup = MemoryLookup::default();
     endpoint.address_lookup().add(memory_lookup.clone());
 
+    // Enable mDNS for automatic LAN peer discovery.
+    // This lets archive replicators on the same LAN find each other directly
+    // without depending on OrbitDB for node ID exchange. Works even when
+    // OrbitDB replication silently fails.
+    match iroh::address_lookup::MdnsAddressLookup::new() {
+        Ok(mdns) => {
+            endpoint.address_lookup().add(mdns);
+            info!("mDNS LAN discovery enabled");
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to enable mDNS LAN discovery — falling back to OrbitDB only");
+        }
+    }
+
     let node_id = endpoint.id();
     let node_id_str = node_id.to_string();
     info!(node_id = %node_id_str, quic_port = config.quic_port, "Iroh endpoint bound");
