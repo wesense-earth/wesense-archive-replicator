@@ -220,16 +220,34 @@ async fn main() -> Result<()> {
     // 15. Start axum HTTP server
     let app = api::router(app_state);
     let addr = format!("0.0.0.0:{}", config.port);
-    let listener = TcpListener::bind(&addr)
-        .await
-        .context("Failed to bind HTTP listener")?;
 
-    info!(addr = %addr, node_id = %node_id_str, "Sidecar ready");
+    if config.tls_enabled {
+        if let (Some(cert_path), Some(key_path)) = (&config.tls_certfile, &config.tls_keyfile) {
+            let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+                .await
+                .context("Failed to load TLS certificates")?;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("HTTP server error")?;
+            info!(addr = %addr, node_id = %node_id_str, "Sidecar ready (HTTPS)");
+
+            axum_server::bind_rustls(addr.parse()?, tls_config)
+                .serve(app.into_make_service())
+                .await
+                .context("HTTPS server error")?;
+        } else {
+            anyhow::bail!("TLS_ENABLED=true but TLS_CERTFILE or TLS_KEYFILE not set");
+        }
+    } else {
+        let listener = TcpListener::bind(&addr)
+            .await
+            .context("Failed to bind HTTP listener")?;
+
+        info!(addr = %addr, node_id = %node_id_str, "Sidecar ready");
+
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .context("HTTP server error")?;
+    }
 
     info!("Sidecar shutting down");
     Ok(())

@@ -60,6 +60,12 @@ pub struct Config {
     pub wesense_proxy_iroh_port: Option<u16>,
     /// DERP relay URLs for NAT traversal fallback (e.g. `https://derp.wesense.earth`).
     pub relay_urls: Vec<String>,
+    /// Enable TLS on the HTTP API.
+    pub tls_enabled: bool,
+    /// Path to TLS certificate chain (PEM).
+    pub tls_certfile: Option<String>,
+    /// Path to TLS private key (PEM).
+    pub tls_keyfile: Option<String>,
 }
 
 impl Config {
@@ -103,6 +109,11 @@ impl Config {
                         .collect()
                 })
                 .unwrap_or_default(),
+            tls_enabled: std::env::var("TLS_ENABLED")
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(false),
+            tls_certfile: std::env::var("TLS_CERTFILE").ok().filter(|s| !s.is_empty()),
+            tls_keyfile: std::env::var("TLS_KEYFILE").ok().filter(|s| !s.is_empty()),
         }
     }
 
