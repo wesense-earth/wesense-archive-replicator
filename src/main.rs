@@ -223,6 +223,10 @@ async fn main() -> Result<()> {
 
     if config.tls_enabled {
         if let (Some(cert_path), Some(key_path)) = (&config.tls_certfile, &config.tls_keyfile) {
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .expect("Failed to install rustls crypto provider");
+
             let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
                 .await
                 .context("Failed to load TLS certificates")?;

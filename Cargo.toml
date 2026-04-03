@@ -22,5 +22,6 @@ hex = "0.4"
 rand = "0.9"
 reqwest = { version = "0.12", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
