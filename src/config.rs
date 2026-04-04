@@ -46,7 +46,7 @@ pub struct Config {
     pub quic_port: u16,
     /// Store scope — which country/subdivision archives to download.
     /// Default "*/*" = replicate all. Set to specific patterns to limit.
-    pub store_scope: Vec<ScopePattern>,
+    pub guardian_scope: Vec<ScopePattern>,
     /// OrbitDB HTTP API URL for peer discovery.
     pub orbitdb_url: String,
     /// Public address to announce to other peers (IP or hostname).
@@ -71,9 +71,9 @@ pub struct Config {
 impl Config {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
-        let store_scope_str = std::env::var("IROH_STORE_SCOPE")
+        let guardian_scope_str = std::env::var("GUARDIAN_SCOPE")
             .unwrap_or_else(|_| "*/*".to_string());
-        let store_scope: Vec<ScopePattern> = store_scope_str
+        let guardian_scope: Vec<ScopePattern> = guardian_scope_str
             .split(',')
             .filter_map(ScopePattern::parse)
             .collect();
@@ -92,7 +92,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(4401),
-            store_scope,
+            guardian_scope,
             orbitdb_url: std::env::var("ORBITDB_URL")
                 .unwrap_or_else(|_| "http://wesense-orbitdb:5200".to_string()),
             announce_address: std::env::var("ANNOUNCE_ADDRESS").ok().filter(|s| !s.is_empty()),
@@ -118,8 +118,8 @@ impl Config {
     }
 
     /// Check if a country/subdivision pair matches the store scope.
-    /// Returns false if store_scope is empty (no downloads).
-    pub fn matches_store_scope(&self, country: &str, subdivision: &str) -> bool {
-        self.store_scope.iter().any(|p| p.matches(country, subdivision))
+    /// Returns false if guardian_scope is empty (no downloads).
+    pub fn matches_guardian_scope(&self, country: &str, subdivision: &str) -> bool {
+        self.guardian_scope.iter().any(|p| p.matches(country, subdivision))
     }
 }

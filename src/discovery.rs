@@ -165,28 +165,28 @@ async fn discover_peers(
     Ok(peers)
 }
 
-/// Register this node's store scope in OrbitDB.
-async fn register_store_scope(
+/// Register this node's guardian scope in OrbitDB.
+async fn register_guardian_scope(
     config: &Config,
     node_id: &str,
     blob_count: usize,
     client: &reqwest::Client,
 ) -> Result<()> {
     let short_id = &node_id[..16.min(node_id.len())];
-    let id = format!("iroh-sidecar-{}", short_id);
+    let id = format!("archive-replicator-{}", short_id);
     let url = format!("{}/stores/{}", config.orbitdb_url, id);
 
     let scope: Vec<String> = config
-        .store_scope
+        .guardian_scope
         .iter()
         .map(|p| format!("{}/{}", p.country, p.subdivision))
         .collect();
 
     let body = serde_json::json!({
-        "store_scope": scope,
+        "guardian_scope": scope,
         "blob_count": blob_count,
         "iroh_node_id": node_id,
-        "type": "iroh-sidecar",
+        "type": "archive-replicator",
     });
 
     let resp = client
@@ -195,14 +195,14 @@ async fn register_store_scope(
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .context("Failed to register store scope in OrbitDB")?;
+        .context("Failed to register guardian scope in OrbitDB")?;
 
     if resp.status().is_success() {
-        debug!(id = %id, blob_count, "Registered store scope in OrbitDB");
+        debug!(id = %id, blob_count, "Registered guardian scope in OrbitDB");
     } else {
         warn!(
             status = %resp.status(),
-            "OrbitDB store scope registration returned non-success"
+            "OrbitDB guardian scope registration returned non-success"
         );
     }
 
@@ -270,10 +270,10 @@ pub fn spawn_discovery_loop(
                 debug!(error = %e, "OrbitDB re-registration failed");
             }
 
-            // Register store scope alongside node heartbeat
+            // Register guardian scope alongside node heartbeat
             let blob_count = store.blob_count().await;
-            if let Err(e) = register_store_scope(&config, &node_id, blob_count, &client).await {
-                debug!(error = %e, "OrbitDB store scope registration failed");
+            if let Err(e) = register_guardian_scope(&config, &node_id, blob_count, &client).await {
+                debug!(error = %e, "OrbitDB guardian scope registration failed");
             }
 
             // Discover peers and wire them into endpoint + gossip.

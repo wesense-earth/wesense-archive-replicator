@@ -40,7 +40,7 @@ struct StatusResponse {
     blob_count: usize,
     connected_peers: usize,
     gossip_topic: String,
-    store_scope: Vec<String>,
+    guardian_scope: Vec<String>,
     relay_urls: Vec<String>,
     replication: ReplicationStatusResponse,
 }
@@ -177,7 +177,7 @@ async fn archived_dates(
 async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
     let scope_strings: Vec<String> = state
         .config
-        .store_scope
+        .guardian_scope
         .iter()
         .map(|p| format!("{}/{}", p.country, p.subdivision))
         .collect();
@@ -189,7 +189,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
         blob_count: state.store.blob_count().await,
         connected_peers: state.gossip.connected_peers(),
         gossip_topic: state.config.gossip_topic.clone(),
-        store_scope: scope_strings,
+        guardian_scope: scope_strings,
         relay_urls: state.config.relay_urls.clone(),
         replication: ReplicationStatusResponse {
             replicated: repl_stats.replicated(),

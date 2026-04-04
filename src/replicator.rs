@@ -130,13 +130,13 @@ impl Replicator {
     }
 
     async fn handle_fetch_request(&self, req: &FetchRequest) -> Result<()> {
-        // 1. Check store scope (skip for internal sync blobs)
-        if !req.path.starts_with("_sync/") && !self.config.matches_store_scope(&req.country, &req.subdivision) {
+        // 1. Check guardian scope (skip for internal sync blobs)
+        if !req.path.starts_with("_sync/") && !self.config.matches_guardian_scope(&req.country, &req.subdivision) {
             debug!(
                 path = %req.path,
                 country = %req.country,
                 subdivision = %req.subdivision,
-                "Skipping archive outside store scope"
+                "Skipping archive outside guardian scope"
             );
             self.stats.skipped_scope.fetch_add(1, Ordering::Relaxed);
             return Ok(());

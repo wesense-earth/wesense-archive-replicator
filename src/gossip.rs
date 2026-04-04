@@ -466,7 +466,7 @@ impl GossipHandle {
                                             }
 
                                             if let Some((country, subdivision, _)) = parse_archive_path(path) {
-                                                if !config.matches_store_scope(&country, &subdivision) {
+                                                if !config.matches_guardian_scope(&country, &subdivision) {
                                                     skipped_scope += 1;
                                                     continue;
                                                 }
