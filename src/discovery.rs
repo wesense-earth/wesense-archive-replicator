@@ -286,13 +286,13 @@ pub fn spawn_discovery_loop(
 
             // Re-register (heartbeat)
             if let Err(e) = register_node(&config, &node_id, &client).await {
-                debug!(error = %e, "OrbitDB re-registration failed");
+                warn!(error = %e, "OrbitDB re-registration failed");
             }
 
             // Register guardian scope alongside node heartbeat
             let blob_count = store.blob_count().await;
             if let Err(e) = register_guardian_scope(&config, &node_id, blob_count, &client).await {
-                debug!(error = %e, "OrbitDB guardian scope registration failed");
+                warn!(error = %e, "OrbitDB guardian scope registration failed");
             }
 
             // Discover peers and wire them into endpoint + gossip.
@@ -306,7 +306,7 @@ pub fn spawn_discovery_loop(
                     debug!(peer_count = count, "Updated discovered peers list");
                 }
                 Err(e) => {
-                    debug!(error = %e, "Peer discovery failed");
+                    warn!(error = %e, "Peer discovery failed");
                 }
             }
 

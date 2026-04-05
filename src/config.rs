@@ -93,8 +93,15 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(4401),
             guardian_scope,
-            orbitdb_url: std::env::var("ORBITDB_URL")
-                .unwrap_or_else(|_| "http://wesense-orbitdb:5200".to_string()),
+            orbitdb_url: {
+                let url = std::env::var("ORBITDB_URL")
+                    .unwrap_or_else(|_| "http://wesense-orbitdb:5200".to_string());
+                if std::env::var("TLS_ENABLED").map(|v| v.to_lowercase() == "true").unwrap_or(false) {
+                    url.replace("http://", "https://")
+                } else {
+                    url
+                }
+            },
             announce_address: std::env::var("ANNOUNCE_ADDRESS").ok().filter(|s| !s.is_empty()),
             wesense_proxy: std::env::var("WESENSE_PROXY").ok().filter(|s| !s.is_empty()),
             wesense_proxy_iroh_port: std::env::var("WESENSE_PROXY_IROH_PORT")
