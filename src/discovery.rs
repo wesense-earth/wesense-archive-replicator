@@ -229,7 +229,31 @@ pub fn spawn_discovery_loop(
     let peers_clone = Arc::clone(&discovered_peers);
 
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = if config.tls_enabled {
+            // Trust the deployment CA for self-signed certs.
+            // CA cert is alongside the service cert (e.g. /app/certs/ca.pem).
+            let ca_path = config.tls_certfile.as_deref()
+                .map(|p| std::path::Path::new(p).parent().unwrap_or(std::path::Path::new(".")))
+                .map(|dir| dir.join("ca.pem"));
+            if let Some(ref path) = ca_path {
+                if let Ok(pem) = tokio::fs::read(path).await {
+                    if let Ok(cert) = reqwest::Certificate::from_pem(&pem) {
+                        reqwest::Client::builder()
+                            .add_root_certificate(cert)
+                            .build()
+                            .unwrap_or_else(|_| reqwest::Client::new())
+                    } else {
+                        reqwest::Client::new()
+                    }
+                } else {
+                    reqwest::Client::new()
+                }
+            } else {
+                reqwest::Client::new()
+            }
+        } else {
+            reqwest::Client::new()
+        };
 
         if let Some(ref proxy_ip) = config.wesense_proxy {
             info!(
@@ -305,16 +329,15 @@ pub fn spawn_discovery_loop(
                         let peers = peers_clone.read().await;
                         peers.iter()
                             .find_map(|p| p.node_id.parse::<PublicKey>().ok())
-                    }.or_else(|| {
-                        // OrbitDB didn't have it — query the proxy's status endpoint directly
-                        None
-                    });
+                    };
 
                     let proxy_node_id = match proxy_node_id {
                         Some(pk) => Some(pk),
                         None => {
-                            // Query proxy's archive replicator status for its node_id
-                            let status_url = format!("http://{}:{}/status", proxy_ip, sidecar_port);
+                            // Query proxy's archive replicator status for its node_id.
+                            // Try HTTPS first (when TLS enabled), fall back to HTTP.
+                            let scheme = if config.tls_enabled { "https" } else { "http" };
+                            let status_url = format!("{}://{}:{}/status", scheme, proxy_ip, sidecar_port);
                             match client.get(&status_url).timeout(std::time::Duration::from_secs(5)).send().await {
                                 Ok(resp) if resp.status().is_success() => {
                                     match resp.json::<serde_json::Value>().await {
@@ -344,7 +367,7 @@ pub fn spawn_discovery_loop(
                             );
                         }
                     } else {
-                        debug!(proxy_ip = %proxy_ip, "Could not resolve proxy peer node ID");
+                        warn!(proxy_ip = %proxy_ip, "Could not resolve proxy peer node ID — proxy may not be running or TLS mismatch");
                     }
                 }
             }
