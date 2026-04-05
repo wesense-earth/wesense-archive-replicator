@@ -319,11 +319,17 @@ pub fn spawn_discovery_loop(
                     let proxy_port = config.wesense_proxy_iroh_port.unwrap_or(config.quic_port);
                     let sidecar_port = 4400u16; // archive replicator HTTP API
 
-                    // Try to get proxy's node ID — first from OrbitDB peers, then direct HTTP
+                    // Try to get proxy's node ID — first from OrbitDB peers, then direct HTTPS
                     let proxy_node_id: Option<PublicKey> = {
                         let peers = peers_clone.read().await;
-                        peers.iter()
-                            .find_map(|p| p.node_id.parse::<PublicKey>().ok())
+                        let found = peers.iter()
+                            .find_map(|p| p.node_id.parse::<PublicKey>().ok());
+                        if found.is_some() {
+                            info!(proxy_ip = %proxy_ip, "Got proxy node ID from OrbitDB peers");
+                        } else {
+                            info!(proxy_ip = %proxy_ip, peer_count = peers.len(), "No proxy node ID from OrbitDB peers, trying status endpoint");
+                        }
+                        found
                     };
 
                     let proxy_node_id = match proxy_node_id {
@@ -339,13 +345,27 @@ pub fn spawn_discovery_loop(
                                 Ok(resp) if resp.status().is_success() => {
                                     match resp.json::<serde_json::Value>().await {
                                         Ok(body) => {
-                                            body["node_id"].as_str()
-                                                .and_then(|id| id.parse::<PublicKey>().ok())
+                                            let nid = body["node_id"].as_str()
+                                                .and_then(|id| id.parse::<PublicKey>().ok());
+                                            if nid.is_some() {
+                                                info!(proxy_ip = %proxy_ip, "Got proxy node ID from status endpoint");
+                                            }
+                                            nid
                                         }
-                                        Err(_) => None,
+                                        Err(e) => {
+                                            warn!(proxy_ip = %proxy_ip, error = %e, "Failed to parse proxy status response");
+                                            None
+                                        }
                                     }
                                 }
-                                _ => None,
+                                Ok(resp) => {
+                                    warn!(proxy_ip = %proxy_ip, status = %resp.status(), "Proxy status endpoint returned non-success");
+                                    None
+                                }
+                                Err(e) => {
+                                    warn!(proxy_ip = %proxy_ip, error = %e, "Failed to query proxy status endpoint");
+                                    None
+                                }
                             }
                         }
                     };
