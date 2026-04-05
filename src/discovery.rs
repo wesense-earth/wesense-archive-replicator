@@ -229,28 +229,23 @@ pub fn spawn_discovery_loop(
     let peers_clone = Arc::clone(&discovered_peers);
 
     tokio::spawn(async move {
+        // Build HTTP client. When TLS is enabled, trust the deployment CA
+        // and skip hostname verification for LAN proxy connections (the proxy
+        // IP won't be in the cert SANs).
         let client = if config.tls_enabled {
-            // Trust the deployment CA for self-signed certs.
-            // CA cert is alongside the service cert (e.g. /app/certs/ca.pem).
             let ca_path = config.tls_certfile.as_deref()
                 .map(|p| std::path::Path::new(p).parent().unwrap_or(std::path::Path::new(".")))
                 .map(|dir| dir.join("ca.pem"));
+            let mut builder = reqwest::Client::builder()
+                .danger_accept_invalid_hostnames(true);
             if let Some(ref path) = ca_path {
                 if let Ok(pem) = tokio::fs::read(path).await {
                     if let Ok(cert) = reqwest::Certificate::from_pem(&pem) {
-                        reqwest::Client::builder()
-                            .add_root_certificate(cert)
-                            .build()
-                            .unwrap_or_else(|_| reqwest::Client::new())
-                    } else {
-                        reqwest::Client::new()
+                        builder = builder.add_root_certificate(cert);
                     }
-                } else {
-                    reqwest::Client::new()
                 }
-            } else {
-                reqwest::Client::new()
             }
+            builder.build().unwrap_or_else(|_| reqwest::Client::new())
         } else {
             reqwest::Client::new()
         };
@@ -335,7 +330,9 @@ pub fn spawn_discovery_loop(
                         Some(pk) => Some(pk),
                         None => {
                             // Query proxy's archive replicator status for its node_id.
-                            // Try HTTPS first (when TLS enabled), fall back to HTTP.
+                            // Uses HTTPS when TLS enabled. Hostname verification is
+                            // skipped in the client (see above) because the proxy is
+                            // accessed by LAN IP which won't be in the cert SANs.
                             let scheme = if config.tls_enabled { "https" } else { "http" };
                             let status_url = format!("{}://{}:{}/status", scheme, proxy_ip, sidecar_port);
                             match client.get(&status_url).timeout(std::time::Duration::from_secs(5)).send().await {
