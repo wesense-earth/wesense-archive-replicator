@@ -465,6 +465,25 @@ impl GossipHandle {
                                                 continue;
                                             }
 
+                                            // Internal blobs (_classifications/) bypass scope and exists checks
+                                            let is_internal = path.starts_with("_classifications/");
+
+                                            if is_internal {
+                                                let req = FetchRequest {
+                                                    hash: entry.hash.clone(),
+                                                    path: path.clone(),
+                                                    country: "_internal".to_string(),
+                                                    subdivision: "classifications".to_string(),
+                                                    size: entry.size,
+                                                    source_node: node_id.clone(),
+                                                };
+                                                if let Err(e) = tx.send(req).await {
+                                                    warn!(error = %e, "Catch-up channel closed");
+                                                    break;
+                                                }
+                                                continue;
+                                            }
+
                                             if let Some((country, subdivision, _)) = parse_archive_path(path) {
                                                 if !config.matches_guardian_scope(&country, &subdivision) {
                                                     skipped_scope += 1;
