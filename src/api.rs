@@ -87,7 +87,8 @@ async fn put_blob(
 
     match state.store.import(&path, body).await {
         Ok(hash) => {
-            // Try to announce via gossip (extract date from path if possible)
+            // Announce via gossip — archive paths get country/subdivision/date,
+            // internal paths (_classifications/, etc.) use placeholder values
             if let Some((country, subdivision, date)) = parse_archive_path(&path) {
                 if let Err(e) = state
                     .gossip
@@ -95,6 +96,14 @@ async fn put_blob(
                     .await
                 {
                     error!(error = %e, "Failed to announce via gossip");
+                }
+            } else if path.starts_with("_classifications/") {
+                if let Err(e) = state
+                    .gossip
+                    .announce_archive("_internal", "classifications", "latest", &hash, &path, size)
+                    .await
+                {
+                    error!(error = %e, "Failed to announce classification via gossip");
                 }
             }
 

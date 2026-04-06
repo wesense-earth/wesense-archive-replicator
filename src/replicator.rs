@@ -130,8 +130,9 @@ impl Replicator {
     }
 
     async fn handle_fetch_request(&self, req: &FetchRequest) -> Result<()> {
-        // 1. Check guardian scope (skip for internal sync blobs)
-        if !req.path.starts_with("_sync/") && !self.config.matches_guardian_scope(&req.country, &req.subdivision) {
+        // 1. Check guardian scope (skip for internal blobs: _sync/ and _classifications/)
+        let is_internal = req.path.starts_with("_sync/") || req.path.starts_with("_classifications/");
+        if !is_internal && !self.config.matches_guardian_scope(&req.country, &req.subdivision) {
             debug!(
                 path = %req.path,
                 country = %req.country,
@@ -142,8 +143,8 @@ impl Replicator {
             return Ok(());
         }
 
-        // 2. Check if already in index (skip for _sync/ blobs — they change each cycle)
-        if !req.path.starts_with("_sync/") && self.index.exists(&req.path).await {
+        // 2. Check if already in index (skip for internal blobs — they change each cycle)
+        if !is_internal && self.index.exists(&req.path).await {
             debug!(path = %req.path, "Archive already exists, skipping");
             self.stats
                 .skipped_existing
