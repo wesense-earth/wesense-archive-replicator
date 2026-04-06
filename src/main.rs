@@ -1,7 +1,7 @@
-//! WeSense Iroh Sidecar — blob store + gossip HTTP API.
+//! WeSense Archive Replicator — blob store + gossip HTTP API.
 //!
 //! A small axum HTTP server wrapping iroh-blobs and iroh-gossip.
-//! The Python storage gateway's IrohBackend talks to this sidecar.
+//! The storage broker talks to this service for archive storage and replication.
 
 mod api;
 mod config;

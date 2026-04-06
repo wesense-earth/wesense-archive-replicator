@@ -1,4 +1,4 @@
-//! Axum HTTP route handlers for the sidecar API.
+//! Axum HTTP route handlers for the archive replicator API.
 
 use std::sync::Arc;
 

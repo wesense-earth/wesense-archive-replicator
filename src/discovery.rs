@@ -13,20 +13,20 @@ use crate::config::Config;
 use crate::gossip::GossipHandle;
 use crate::store::BlobStore;
 
-/// Register this node's iroh identity in OrbitDB.
+/// Register this archive replicator node in OrbitDB.
 async fn register_node(
     config: &Config,
     node_id: &str,
     client: &reqwest::Client,
 ) -> Result<()> {
-    let id = format!("iroh-sidecar-{}", &node_id[..16.min(node_id.len())]);
+    let id = format!("archive-replicator-{}", &node_id[..16.min(node_id.len())]);
     let url = format!("{}/nodes/{}", config.orbitdb_url, id);
 
     let mut body = serde_json::json!({
         "iroh_node_id": node_id,
         "iroh_quic_port": config.quic_port,
-        "iroh_sidecar_port": config.port,
-        "type": "iroh-sidecar",
+        "archive_replicator_port": config.port,
+        "type": "archive-replicator",
     });
 
     // Proxied stations don't register their WAN address — they're not directly
@@ -61,8 +61,8 @@ async fn register_node(
     Ok(())
 }
 
-/// Discover other iroh sidecar peers from OrbitDB.
-/// Returns a list of DiscoveredPeer with node IDs and sidecar HTTP URLs.
+/// Discover other archive replicator peers from OrbitDB.
+/// Returns a list of DiscoveredPeer with node IDs and HTTP URLs.
 /// Also registers discovered peer addresses in the endpoint's address lookup
 /// and joins them via gossip.
 async fn discover_peers(
@@ -317,7 +317,7 @@ pub fn spawn_discovery_loop(
             if let Some(ref proxy_ip) = config.wesense_proxy {
                 if let Ok(ip) = proxy_ip.parse::<std::net::IpAddr>() {
                     let proxy_port = config.wesense_proxy_iroh_port.unwrap_or(config.quic_port);
-                    let sidecar_port = 4400u16; // archive replicator HTTP API
+                    let replicator_port = 4400u16; // archive replicator HTTP API
 
                     // Try to get proxy's node ID — first from OrbitDB peers, then direct HTTPS
                     let proxy_node_id: Option<PublicKey> = {
@@ -340,7 +340,7 @@ pub fn spawn_discovery_loop(
                             // skipped in the client (see above) because the proxy is
                             // accessed by LAN IP which won't be in the cert SANs.
                             let scheme = if config.tls_enabled { "https" } else { "http" };
-                            let status_url = format!("{}://{}:{}/status", scheme, proxy_ip, sidecar_port);
+                            let status_url = format!("{}://{}:{}/status", scheme, proxy_ip, replicator_port);
                             match client.get(&status_url).timeout(std::time::Duration::from_secs(5)).send().await {
                                 Ok(resp) if resp.status().is_success() => {
                                     match resp.json::<serde_json::Value>().await {
