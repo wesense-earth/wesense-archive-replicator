@@ -140,8 +140,14 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to open blob store")?;
 
-    // 5. Create the blobs network protocol
-    let blobs_protocol = BlobsProtocol::new(blob_store.inner(), None);
+    // 5. Create the blobs network protocol with garbage collection enabled.
+    // GC runs every 10 minutes and cleans up untagged blobs (e.g. old copies
+    // of the path index that accumulate during catch-up sync).
+    let gc_config = iroh_blobs::store::GcConfig {
+        interval: std::time::Duration::from_secs(600),
+        add_protected: None,
+    };
+    let blobs_protocol = BlobsProtocol::new(blob_store.inner(), Some(gc_config));
 
     // 6. Create downloader from the blob store (before router takes ownership)
     let downloader = blobs_protocol.store().downloader(&endpoint);

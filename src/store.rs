@@ -50,10 +50,16 @@ impl BlobStore {
     }
 
     /// Import bytes at a logical path. Returns the BLAKE3 hash hex string.
+    ///
+    /// Uses a named tag so that reimporting the same logical path (e.g.
+    /// `_sync/index.json`) reassigns the tag to the new blob. The previous
+    /// blob becomes untagged and eligible for garbage collection.
     pub async fn import(&self, logical_path: &str, data: Bytes) -> Result<String> {
         let size = data.len() as u64;
 
-        // Use the logical path as the tag name for easy lookup
+        // Use the logical path as the tag name for easy lookup.
+        // with_named_tag reassigns the tag if it already exists,
+        // making the old blob eligible for GC.
         let tag_name = path_to_tag(logical_path);
 
         let tag_info = self
