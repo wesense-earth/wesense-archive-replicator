@@ -37,14 +37,25 @@ pub struct BlobStore {
 
 impl BlobStore {
     /// Open or create the blob store at `data_dir/blobs`.
+    ///
+    /// Enables garbage collection (every 10 minutes) to clean up untagged
+    /// blobs — prevents orphaned copies of the path index from accumulating
+    /// during catch-up sync.
     pub async fn open(data_dir: &Path, index: Arc<PathIndex>) -> Result<Self> {
         let blobs_dir = data_dir.join("blobs");
         tokio::fs::create_dir_all(&blobs_dir).await?;
 
-        let store = FsStore::load(&blobs_dir)
+        let db_path = blobs_dir.join("blobs.db");
+        let mut opts = iroh_blobs::store::fs::options::Options::new(&blobs_dir);
+        opts.gc = Some(iroh_blobs::store::GcConfig {
+            interval: std::time::Duration::from_secs(600),
+            add_protected: None,
+        });
+
+        let store = FsStore::load_with_opts(db_path, opts)
             .await
             .context("Failed to open iroh blob store")?;
-        info!(path = %blobs_dir.display(), "Blob store opened");
+        info!(path = %blobs_dir.display(), "Blob store opened with GC (10min interval)");
 
         Ok(Self { store, index, blobs_dir })
     }
