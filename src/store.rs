@@ -46,13 +46,13 @@ impl BlobStore {
         let blobs_dir = data_dir.join("blobs");
         tokio::fs::create_dir_all(&blobs_dir).await?;
 
-        let mut opts = iroh_blobs::store::fs::Options::default();
+        let mut opts = iroh_blobs::store::fs::options::Options::new(&blobs_dir);
         opts.gc = Some(GcConfig {
             interval: std::time::Duration::from_secs(600),
             add_protected: None,
         });
 
-        let store = FsStore::load_with_opts(&blobs_dir, opts)
+        let store = FsStore::load_with_opts(blobs_dir.clone(), opts)
             .await
             .context("Failed to open iroh blob store")?;
         info!(path = %blobs_dir.display(), "Blob store opened with GC enabled (10min interval)");
