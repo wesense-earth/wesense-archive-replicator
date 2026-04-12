@@ -2,6 +2,18 @@
 
 use std::sync::Arc;
 
+/// Format bytes as a human-readable string (e.g. "26.4 GiB").
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+    let i = (bytes as f64).log(1024.0).floor() as usize;
+    let i = i.min(UNITS.len() - 1);
+    let val = bytes as f64 / 1024f64.powi(i as i32);
+    format!("{:.2} {}", val, UNITS[i])
+}
+
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -38,6 +50,8 @@ struct StoreResponse {
 struct StatusResponse {
     node_id: String,
     blob_count: usize,
+    total_bytes: u64,
+    total_size: String,
     connected_peers: usize,
     gossip_topic: String,
     guardian_scope: Vec<String>,
@@ -193,9 +207,15 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
 
     let repl_stats = &state.stats;
 
+    let blob_count = state.store.blob_count().await;
+    let total_bytes = state.store.total_bytes().await;
+    let total_size = format_bytes(total_bytes);
+
     Json(StatusResponse {
         node_id: state.node_id.clone(),
-        blob_count: state.store.blob_count().await,
+        blob_count,
+        total_bytes,
+        total_size,
         connected_peers: state.gossip.connected_peers(),
         gossip_topic: state.config.gossip_topic.clone(),
         guardian_scope: scope_strings,

@@ -1,6 +1,6 @@
 //! Iroh blob store wrapper — import, get, exists, tag operations.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -11,10 +11,28 @@ use tracing::{debug, info};
 
 use crate::index::PathIndex;
 
+/// Recursively sum file sizes in a directory.
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    total += meta.len();
+                } else if meta.is_dir() {
+                    total += dir_size(&entry.path());
+                }
+            }
+        }
+    }
+    total
+}
+
 /// Wraps an iroh-blobs `FsStore` with a logical path index.
 pub struct BlobStore {
     store: FsStore,
     index: Arc<PathIndex>,
+    blobs_dir: PathBuf,
 }
 
 impl BlobStore {
@@ -28,7 +46,7 @@ impl BlobStore {
             .context("Failed to open iroh blob store")?;
         info!(path = %blobs_dir.display(), "Blob store opened");
 
-        Ok(Self { store, index })
+        Ok(Self { store, index, blobs_dir })
     }
 
     /// Import bytes at a logical path. Returns the BLAKE3 hash hex string.
@@ -128,6 +146,17 @@ impl BlobStore {
     /// Total number of indexed blobs.
     pub async fn blob_count(&self) -> usize {
         self.index.len().await
+    }
+
+    /// Total bytes used by the blob store on disk.
+    /// Walks the blobs directory and sums file sizes.
+    pub async fn total_bytes(&self) -> u64 {
+        let blobs_dir = self.blobs_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            dir_size(&blobs_dir)
+        })
+        .await
+        .unwrap_or(0)
     }
 }
 
