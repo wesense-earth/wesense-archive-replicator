@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::store::GcConfig;
 use iroh_blobs::Hash;
 use tracing::{debug, info};
 
@@ -37,14 +38,24 @@ pub struct BlobStore {
 
 impl BlobStore {
     /// Open or create the blob store at `data_dir/blobs`.
+    ///
+    /// Enables garbage collection (every 10 minutes) to clean up untagged
+    /// blobs. Without GC, blobs that lose their tag (e.g. old path index
+    /// copies replaced during catch-up sync) accumulate indefinitely.
     pub async fn open(data_dir: &Path, index: Arc<PathIndex>) -> Result<Self> {
         let blobs_dir = data_dir.join("blobs");
         tokio::fs::create_dir_all(&blobs_dir).await?;
 
-        let store = FsStore::load(&blobs_dir)
+        let mut opts = iroh_blobs::store::fs::Options::default();
+        opts.gc = Some(GcConfig {
+            interval: std::time::Duration::from_secs(600),
+            add_protected: None,
+        });
+
+        let store = FsStore::load_with_opts(&blobs_dir, opts)
             .await
             .context("Failed to open iroh blob store")?;
-        info!(path = %blobs_dir.display(), "Blob store opened");
+        info!(path = %blobs_dir.display(), "Blob store opened with GC enabled (10min interval)");
 
         Ok(Self { store, index, blobs_dir })
     }
