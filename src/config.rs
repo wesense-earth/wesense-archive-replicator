@@ -2,6 +2,37 @@
 
 use std::path::PathBuf;
 
+/// A scope pattern like `"nz/wgn"` or `"au/*"`.
+/// Matches country/subdivision pairs in archive paths.
+#[derive(Debug, Clone)]
+pub struct ScopePattern {
+    pub country: String,
+    pub subdivision: String, // "*" = any
+}
+
+impl ScopePattern {
+    /// Parse a single pattern like `"nz/wgn"` or `"au/*"`.
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.trim().splitn(2, '/').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            Some(Self {
+                country: parts[0].to_lowercase(),
+                subdivision: parts[1].to_lowercase(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Check if this pattern matches a given country/subdivision.
+    pub fn matches(&self, country: &str, subdivision: &str) -> bool {
+        let country_lower = country.to_lowercase();
+        let subdiv_lower = subdivision.to_lowercase();
+        (self.country == "*" || self.country == country_lower)
+            && (self.subdivision == "*" || self.subdivision == subdiv_lower)
+    }
+}
+
 /// Sidecar configuration, read from env vars with defaults.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -11,11 +42,42 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Gossip topic name (hashed to TopicId).
     pub gossip_topic: String,
+    /// QUIC bind port for iroh P2P connections.
+    pub quic_port: u16,
+    /// Store scope — which country/subdivision archives to download.
+    /// Default "*/*" = replicate all. Set to specific patterns to limit.
+    pub guardian_scope: Vec<ScopePattern>,
+    /// OrbitDB HTTP API URL for peer discovery.
+    pub orbitdb_url: String,
+    /// Public address to announce to other peers (IP or hostname).
+    /// Ignored when proxy_router is set (proxied station).
+    pub announce_address: Option<String>,
+    /// LAN IP of the WeSense proxy station handling WAN connectivity.
+    /// When set: this is a proxied station — don't register ANNOUNCE_ADDRESS in OrbitDB,
+    /// connect to the proxy peer via this LAN IP for iroh gossip.
+    pub wesense_proxy: Option<String>,
+    /// Override QUIC port when connecting to the proxy peer (default: same as quic_port).
+    pub wesense_proxy_iroh_port: Option<u16>,
+    /// DERP relay URLs for NAT traversal fallback (e.g. `https://derp.wesense.earth`).
+    pub relay_urls: Vec<String>,
+    /// Enable TLS on the HTTP API.
+    pub tls_enabled: bool,
+    /// Path to TLS certificate chain (PEM).
+    pub tls_certfile: Option<String>,
+    /// Path to TLS private key (PEM).
+    pub tls_keyfile: Option<String>,
 }
 
 impl Config {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
+        let guardian_scope_str = std::env::var("GUARDIAN_SCOPE")
+            .unwrap_or_else(|_| "*/*".to_string());
+        let guardian_scope: Vec<ScopePattern> = guardian_scope_str
+            .split(',')
+            .filter_map(ScopePattern::parse)
+            .collect();
+
         Self {
             port: std::env::var("IROH_SIDECAR_PORT")
                 .ok()
@@ -26,6 +88,45 @@ impl Config {
                 .unwrap_or_else(|_| PathBuf::from("data")),
             gossip_topic: std::env::var("IROH_GOSSIP_TOPIC")
                 .unwrap_or_else(|_| "wesense-archives".to_string()),
+            quic_port: std::env::var("IROH_QUIC_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(4401),
+            guardian_scope,
+            orbitdb_url: {
+                let url = std::env::var("ORBITDB_URL")
+                    .unwrap_or_else(|_| "http://wesense-orbitdb:5200".to_string());
+                if std::env::var("TLS_ENABLED").map(|v| v.to_lowercase() == "true").unwrap_or(false) {
+                    url.replace("http://", "https://")
+                } else {
+                    url
+                }
+            },
+            announce_address: std::env::var("ANNOUNCE_ADDRESS").ok().filter(|s| !s.is_empty()),
+            wesense_proxy: std::env::var("WESENSE_PROXY").ok().filter(|s| !s.is_empty()),
+            wesense_proxy_iroh_port: std::env::var("WESENSE_PROXY_IROH_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            relay_urls: std::env::var("IROH_RELAY_URLS")
+                .ok()
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            tls_enabled: std::env::var("TLS_ENABLED")
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(false),
+            tls_certfile: std::env::var("TLS_CERTFILE").ok().filter(|s| !s.is_empty()),
+            tls_keyfile: std::env::var("TLS_KEYFILE").ok().filter(|s| !s.is_empty()),
         }
+    }
+
+    /// Check if a country/subdivision pair matches the store scope.
+    /// Returns false if guardian_scope is empty (no downloads).
+    pub fn matches_guardian_scope(&self, country: &str, subdivision: &str) -> bool {
+        self.guardian_scope.iter().any(|p| p.matches(country, subdivision))
     }
 }

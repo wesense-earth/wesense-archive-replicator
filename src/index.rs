@@ -136,6 +136,12 @@ impl PathIndex {
         dates
     }
 
+    /// Return all entries as a map (for the /path-index API).
+    pub async fn dump(&self) -> BTreeMap<String, IndexEntry> {
+        let entries = self.entries.read().await;
+        entries.clone()
+    }
+
     /// Total number of entries in the index.
     pub async fn len(&self) -> usize {
         let entries = self.entries.read().await;

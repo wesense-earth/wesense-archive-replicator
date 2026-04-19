@@ -1,26 +1,42 @@
-//! Axum HTTP route handlers for the sidecar API.
+//! Axum HTTP route handlers for the archive replicator API.
 
 use std::sync::Arc;
 
+/// Format bytes as a human-readable string (e.g. "26.4 GiB").
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+    let i = (bytes as f64).log(1024.0).floor() as usize;
+    let i = i.min(UNITS.len() - 1);
+    let val = bytes as f64 / 1024f64.powi(i as i32);
+    format!("{:.2} {}", val, UNITS[i])
+}
+
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, head, put};
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::error;
 
+use crate::config::Config;
 use crate::gossip::GossipHandle;
 use crate::index::PathIndex;
+use crate::replicator::ReplicationStats;
 use crate::store::BlobStore;
 
 /// Shared application state for all route handlers.
 pub struct AppState {
-    pub store: BlobStore,
+    pub store: Arc<BlobStore>,
     pub index: Arc<PathIndex>,
     pub gossip: Arc<GossipHandle>,
     pub node_id: String,
+    pub config: Arc<Config>,
+    pub stats: Arc<ReplicationStats>,
 }
 
 /// Response from PUT /blobs/{path}
@@ -34,7 +50,23 @@ struct StoreResponse {
 struct StatusResponse {
     node_id: String,
     blob_count: usize,
+    total_bytes: u64,
+    total_size: String,
+    connected_peers: usize,
     gossip_topic: String,
+    guardian_scope: Vec<String>,
+    relay_urls: Vec<String>,
+    replication: ReplicationStatusResponse,
+}
+
+#[derive(Serialize)]
+struct ReplicationStatusResponse {
+    replicated: u64,
+    skipped_existing: u64,
+    skipped_scope: u64,
+    failed: u64,
+    last_replicated: Option<String>,
+    last_reconciliation: Option<String>,
 }
 
 /// Build the axum router with all routes.
@@ -43,12 +75,15 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/blobs/{*path}", put(put_blob))
         .route("/blobs/{*path}", get(get_blob))
         .route("/blobs/{*path}", head(head_blob))
+        .route("/list/", get(list_root))
         .route("/list/{*path}", get(list_dir))
         .route(
             "/archived-dates/{country}/{subdivision}",
             get(archived_dates),
         )
         .route("/status", get(status))
+        .route("/path-index", get(path_index))
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)) // 64MB — Parquet archives can be large for dense regions
         .with_state(state)
 }
 
@@ -62,16 +97,27 @@ async fn put_blob(
         return (StatusCode::BAD_REQUEST, "Empty body").into_response();
     }
 
+    let size = body.len() as u64;
+
     match state.store.import(&path, body).await {
         Ok(hash) => {
-            // Try to announce via gossip (extract date from path if possible)
+            // Announce via gossip — archive paths get country/subdivision/date,
+            // internal paths (_classifications/, etc.) use placeholder values
             if let Some((country, subdivision, date)) = parse_archive_path(&path) {
                 if let Err(e) = state
                     .gossip
-                    .announce_archive(&country, &subdivision, &date, &hash)
+                    .announce_archive(&country, &subdivision, &date, &hash, &path, size)
                     .await
                 {
                     error!(error = %e, "Failed to announce via gossip");
+                }
+            } else if path.starts_with("_classifications/") {
+                if let Err(e) = state
+                    .gossip
+                    .announce_archive("_internal", "classifications", "latest", &hash, &path, size)
+                    .await
+                {
+                    error!(error = %e, "Failed to announce classification via gossip");
                 }
             }
 
@@ -126,6 +172,12 @@ async fn head_blob(
     }
 }
 
+/// GET /list/ — List top-level entries (root listing).
+async fn list_root(State(state): State<Arc<AppState>>) -> Json<Vec<String>> {
+    let entries = state.index.list_dir("").await;
+    Json(entries)
+}
+
 /// GET /list/{path} — List entries under a directory prefix.
 async fn list_dir(
     State(state): State<Arc<AppState>>,
@@ -144,18 +196,97 @@ async fn archived_dates(
     Json(dates.into_iter().collect())
 }
 
-/// GET /status — Node status information.
+/// GET /status — Node status information with replication stats.
 async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
+    let scope_strings: Vec<String> = state
+        .config
+        .guardian_scope
+        .iter()
+        .map(|p| format!("{}/{}", p.country, p.subdivision))
+        .collect();
+
+    let repl_stats = &state.stats;
+
+    let blob_count = state.store.blob_count().await;
+    let total_bytes = state.store.total_bytes().await;
+    let total_size = format_bytes(total_bytes);
+
     Json(StatusResponse {
         node_id: state.node_id.clone(),
-        blob_count: state.store.blob_count().await,
-        gossip_topic: "wesense-archives".to_string(),
+        blob_count,
+        total_bytes,
+        total_size,
+        connected_peers: state.gossip.connected_peers(),
+        gossip_topic: state.config.gossip_topic.clone(),
+        guardian_scope: scope_strings,
+        relay_urls: state.config.relay_urls.clone(),
+        replication: ReplicationStatusResponse {
+            replicated: repl_stats.replicated(),
+            skipped_existing: repl_stats.skipped_existing(),
+            skipped_scope: repl_stats.skipped_scope(),
+            failed: repl_stats.failed(),
+            last_replicated: repl_stats.last_replicated(),
+            last_reconciliation: repl_stats.last_reconciliation(),
+        },
     })
+}
+
+/// Query parameters for GET /path-index.
+#[derive(Deserialize, Default)]
+struct PathIndexQuery {
+    /// Filter by country code (e.g. "nz").
+    country: Option<String>,
+    /// Filter by country/subdivision (e.g. "nz/wgn").
+    region: Option<String>,
+    /// Only entries with dates >= this (e.g. "2026-03-01").
+    since: Option<String>,
+}
+
+/// GET /path-index — Dump the path→hash index, optionally filtered.
+async fn path_index(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PathIndexQuery>,
+) -> Json<std::collections::BTreeMap<String, crate::index::IndexEntry>> {
+    let all = state.index.dump().await;
+
+    // If no filters, return everything
+    if params.country.is_none() && params.region.is_none() && params.since.is_none() {
+        return Json(all);
+    }
+
+    let filtered = all
+        .into_iter()
+        .filter(|(path, _)| {
+            // Country filter: path starts with "{country}/"
+            if let Some(ref c) = params.country {
+                if !path.starts_with(&format!("{}/", c)) {
+                    return false;
+                }
+            }
+            // Region filter: path starts with "{country}/{subdivision}/"
+            if let Some(ref r) = params.region {
+                if !path.starts_with(&format!("{}/", r)) {
+                    return false;
+                }
+            }
+            // Since filter: extract date from path and compare lexicographically
+            if let Some(ref since) = params.since {
+                if let Some((_, _, date)) = parse_archive_path(path) {
+                    if date.as_str() < since.as_str() {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .collect();
+
+    Json(filtered)
 }
 
 /// Try to parse `{country}/{subdivision}/{YYYY}/{MM}/{DD}/...` from a path.
 /// Returns (country, subdivision, "YYYY-MM-DD") if the pattern matches.
-fn parse_archive_path(path: &str) -> Option<(String, String, String)> {
+pub(crate) fn parse_archive_path(path: &str) -> Option<(String, String, String)> {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() >= 5 {
         let country = parts[0];

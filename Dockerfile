@@ -21,6 +21,10 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # Stage 3: Build application (only this layer rebuilds on src/ changes)
 FROM deps AS builder
 COPY Cargo.toml Cargo.lock ./
+
+# Bust cache for application code on every CI build
+ARG CACHE_BUST=1
+
 COPY src/ src/
 RUN cargo build --release
 
@@ -28,15 +32,16 @@ RUN cargo build --release
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/wesense-iroh-sidecar /usr/local/bin/
+COPY --from=builder /build/target/release/wesense-archive-replicator /usr/local/bin/
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-ENV IROH_DATA_DIR=/data
+ENV IROH_DATA_DIR=/app/data
 ENV IROH_SIDECAR_PORT=4400
 EXPOSE 4400
+EXPOSE 4401/udp
 
-VOLUME /data
-
-ENTRYPOINT ["wesense-iroh-sidecar"]
+ENTRYPOINT ["/app/entrypoint.sh"]
