@@ -169,7 +169,7 @@ async fn main() -> Result<()> {
 
     // 9. Wire protocols into the router
     let endpoint_for_discovery = endpoint.clone();
-    let _router = Router::builder(endpoint)
+    let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, blobs_protocol)
         .accept(iroh_gossip::ALPN, gossip_raw)
         .spawn();
@@ -234,7 +234,15 @@ async fn main() -> Result<()> {
 
             info!(addr = %addr, node_id = %node_id_str, "Sidecar ready (HTTPS)");
 
+            let handle = axum_server::Handle::new();
+            let shutdown_handle = handle.clone();
+            tokio::spawn(async move {
+                shutdown_signal().await;
+                shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+            });
+
             axum_server::bind_rustls(addr.parse()?, tls_config)
+                .handle(handle)
                 .serve(app.into_make_service())
                 .await
                 .context("HTTPS server error")?;
@@ -255,12 +263,42 @@ async fn main() -> Result<()> {
     }
 
     info!("Sidecar shutting down");
+
+    // Stop accepting P2P connections, then close the blob store. The store commits
+    // to disk in the background, so skipping this loses recently written blobs.
+    if let Err(e) = router.shutdown().await {
+        warn!(error = %e, "Router did not shut down cleanly");
+    }
+    blob_store
+        .inner()
+        .shutdown()
+        .await
+        .context("Failed to close the blob store")?;
+    info!("Blob store closed");
     Ok(())
 }
 
+/// Resolves on ctrl-C or SIGTERM (what `docker stop` sends).
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("Failed to install Ctrl+C handler");
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
     info!("Shutdown signal received");
 }
