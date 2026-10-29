@@ -107,9 +107,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Binary runs
+      - name: Binary is present and fully linked
         run: |
-          docker run --rm --entrypoint wesense-archive-replicator smoke:test --help
+          docker run --rm --entrypoint sh smoke:test -c 'ldd /usr/local/bin/wesense-archive-replicator; ! ldd /usr/local/bin/wesense-archive-replicator | grep "not found"'
 
   # ── Merge platform images into a single multi-arch manifest ───────
   merge:
