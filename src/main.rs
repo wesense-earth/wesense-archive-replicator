@@ -18,6 +18,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use iroh::address_lookup::MemoryLookup;
 use iroh::protocol::Router;
+use iroh::endpoint::presets;
 use iroh::{Endpoint, RelayMode, RelayUrl, SecretKey};
 use iroh_blobs::BlobsProtocol;
 use iroh_gossip::net::Gossip;
@@ -47,7 +48,7 @@ async fn load_or_generate_secret_key(data_dir: &Path) -> Result<SecretKey> {
         info!("Loaded persistent secret key");
         Ok(key)
     } else {
-        let key = SecretKey::generate(&mut rand::rng());
+        let key = SecretKey::generate();
         tokio::fs::write(&key_path, key.to_bytes())
             .await
             .context("Failed to write secret key file")?;
@@ -115,7 +116,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let endpoint = Endpoint::empty_builder()
+    let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(secret_key)
         .relay_mode(relay_mode)
         .clear_address_lookup()
