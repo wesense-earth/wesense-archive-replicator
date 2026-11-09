@@ -7,7 +7,7 @@ description = "WeSense archive replicator — BLAKE3 blob store + P2P gossip rep
 [dependencies]
 iroh = "1"
 iroh-blobs = { version = "0.104", features = ["fs-store"] }
-iroh-gossip = "0.101"
+iroh-gossip = "0.102"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
