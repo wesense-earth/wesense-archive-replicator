@@ -215,6 +215,46 @@ pub struct DiscoveredPeer {
     pub node_id: String,
 }
 
+/// TLS name the LAN proxy's archive replicator is reached by. It is in the
+/// deployment certificate's SANs (the proxy's LAN IP is not), so the client
+/// maps this name to the proxy IP and certificate checks stay fully on.
+const PROXY_TLS_NAME: &str = "archive-replicator";
+
+/// Archive replicator HTTP API port on the LAN proxy.
+const PROXY_REPLICATOR_PORT: u16 = 4400;
+
+/// HTTP client for OrbitDB and the LAN proxy. With TLS it trusts only the
+/// deployment CA, since it talks only to WeSense services.
+async fn build_http_client(config: &Config) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+
+    if let Some(ref proxy) = config.wesense_proxy {
+        let ip: std::net::IpAddr = proxy
+            .parse()
+            .with_context(|| format!("WESENSE_PROXY must be an IP address, got {proxy:?}"))?;
+        builder = builder.resolve(PROXY_TLS_NAME, SocketAddr::new(ip, PROXY_REPLICATOR_PORT));
+    }
+
+    if config.tls_enabled {
+        let certfile = config
+            .tls_certfile
+            .as_deref()
+            .context("TLS_ENABLED=true but TLS_CERTFILE is not set")?;
+        let ca_path = std::path::Path::new(certfile)
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("ca.pem");
+        let pem = tokio::fs::read(&ca_path)
+            .await
+            .with_context(|| format!("Cannot read deployment CA {}", ca_path.display()))?;
+        let ca = reqwest::Certificate::from_pem(&pem)
+            .with_context(|| format!("{} is not a PEM certificate", ca_path.display()))?;
+        builder = builder.tls_certs_only([ca]);
+    }
+
+    builder.build().context("reqwest rejected the HTTP client configuration")
+}
+
 /// Spawn the discovery loop. Registers this node in OrbitDB and periodically
 /// discovers peers. Returns a shared list of discovered peers.
 pub fn spawn_discovery_loop(
@@ -229,25 +269,14 @@ pub fn spawn_discovery_loop(
     let peers_clone = Arc::clone(&discovered_peers);
 
     tokio::spawn(async move {
-        // Build HTTP client. When TLS is enabled, trust the deployment CA
-        // and skip hostname verification for LAN proxy connections (the proxy
-        // IP won't be in the cert SANs).
-        let client = if config.tls_enabled {
-            let ca_path = config.tls_certfile.as_deref()
-                .map(|p| std::path::Path::new(p).parent().unwrap_or(std::path::Path::new(".")))
-                .map(|dir| dir.join("ca.pem"));
-            let mut builder = reqwest::Client::builder()
-                .danger_accept_invalid_hostnames(true);
-            if let Some(ref path) = ca_path {
-                if let Ok(pem) = tokio::fs::read(path).await {
-                    if let Ok(cert) = reqwest::Certificate::from_pem(&pem) {
-                        builder = builder.add_root_certificate(cert);
-                    }
-                }
+        // No fallback client: one without the deployment CA cannot reach
+        // OrbitDB, and discovery would fail on every request without saying why.
+        let client = match build_http_client(&config).await {
+            Ok(client) => client,
+            Err(e) => {
+                error!(error = %format!("{e:#}"), "Cannot build the OrbitDB HTTP client; peer discovery cannot run");
+                std::process::exit(1);
             }
-            builder.build().unwrap_or_else(|_| reqwest::Client::new())
-        } else {
-            reqwest::Client::new()
         };
 
         if let Some(ref proxy_ip) = config.wesense_proxy {
@@ -317,7 +346,6 @@ pub fn spawn_discovery_loop(
             if let Some(ref proxy_ip) = config.wesense_proxy {
                 if let Ok(ip) = proxy_ip.parse::<std::net::IpAddr>() {
                     let proxy_port = config.wesense_proxy_iroh_port.unwrap_or(config.quic_port);
-                    let replicator_port = 4400u16; // archive replicator HTTP API
 
                     // Try to get proxy's node ID — first from OrbitDB peers, then direct HTTPS
                     let proxy_node_id: Option<PublicKey> = {
@@ -336,11 +364,10 @@ pub fn spawn_discovery_loop(
                         Some(pk) => Some(pk),
                         None => {
                             // Query proxy's archive replicator status for its node_id.
-                            // Uses HTTPS when TLS enabled. Hostname verification is
-                            // skipped in the client (see above) because the proxy is
-                            // accessed by LAN IP which won't be in the cert SANs.
+                            // PROXY_TLS_NAME resolves to the proxy IP (see
+                            // build_http_client), so the certificate is checked in full.
                             let scheme = if config.tls_enabled { "https" } else { "http" };
-                            let status_url = format!("{}://{}:{}/status", scheme, proxy_ip, replicator_port);
+                            let status_url = format!("{}://{}:{}/status", scheme, PROXY_TLS_NAME, PROXY_REPLICATOR_PORT);
                             match client.get(&status_url).timeout(std::time::Duration::from_secs(5)).send().await {
                                 Ok(resp) if resp.status().is_success() => {
                                     match resp.json::<serde_json::Value>().await {
