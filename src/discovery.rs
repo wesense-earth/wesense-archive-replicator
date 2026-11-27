@@ -215,6 +215,31 @@ pub struct DiscoveredPeer {
     pub node_id: String,
 }
 
+/// HTTP client for OrbitDB and the LAN proxy.
+async fn build_http_client(config: &Config) -> Result<reqwest::Client> {
+    if !config.tls_enabled {
+        return Ok(reqwest::Client::new());
+    }
+    let certfile = config
+        .tls_certfile
+        .as_deref()
+        .context("TLS_ENABLED=true but TLS_CERTFILE is not set")?;
+    let ca_path = std::path::Path::new(certfile)
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("ca.pem");
+    let pem = tokio::fs::read(&ca_path)
+        .await
+        .with_context(|| format!("Cannot read deployment CA {}", ca_path.display()))?;
+    let ca = reqwest::Certificate::from_pem(&pem)
+        .with_context(|| format!("{} is not a PEM certificate", ca_path.display()))?;
+    reqwest::Client::builder()
+        .tls_certs_only([ca])
+        .danger_accept_invalid_hostnames(true)
+        .build()
+        .context("reqwest rejected the TLS client configuration")
+}
+
 /// Spawn the discovery loop. Registers this node in OrbitDB and periodically
 /// discovers peers. Returns a shared list of discovered peers.
 pub fn spawn_discovery_loop(
@@ -229,25 +254,17 @@ pub fn spawn_discovery_loop(
     let peers_clone = Arc::clone(&discovered_peers);
 
     tokio::spawn(async move {
-        // Build HTTP client. When TLS is enabled, trust the deployment CA
-        // and skip hostname verification for LAN proxy connections (the proxy
-        // IP won't be in the cert SANs).
-        let client = if config.tls_enabled {
-            let ca_path = config.tls_certfile.as_deref()
-                .map(|p| std::path::Path::new(p).parent().unwrap_or(std::path::Path::new(".")))
-                .map(|dir| dir.join("ca.pem"));
-            let mut builder = reqwest::Client::builder()
-                .danger_accept_invalid_hostnames(true);
-            if let Some(ref path) = ca_path {
-                if let Ok(pem) = tokio::fs::read(path).await {
-                    if let Ok(cert) = reqwest::Certificate::from_pem(&pem) {
-                        builder = builder.add_root_certificate(cert);
-                    }
-                }
+        // Build HTTP client. When TLS is enabled, trust only the deployment CA
+        // (this client talks only to WeSense services) and skip hostname
+        // verification for LAN proxy connections (the proxy IP won't be in the
+        // cert SANs). No fallback client: one without the CA cannot reach
+        // OrbitDB, and discovery would fail on every request without saying why.
+        let client = match build_http_client(&config).await {
+            Ok(client) => client,
+            Err(e) => {
+                error!(error = %format!("{e:#}"), "Cannot build the OrbitDB HTTP client; peer discovery cannot run");
+                std::process::exit(1);
             }
-            builder.build().unwrap_or_else(|_| reqwest::Client::new())
-        } else {
-            reqwest::Client::new()
         };
 
         if let Some(ref proxy_ip) = config.wesense_proxy {
